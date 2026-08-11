@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 
 
@@ -239,6 +240,7 @@ def main():
 
     model = Pipeline(
         [
+            ("impute", SimpleImputer(strategy="median")),
             ("scale", StandardScaler()),
             ("logistic", LogisticRegression(max_iter=1000)),
         ]
@@ -246,6 +248,7 @@ def main():
     model.fit(train[baseline_predictor_columns], train["target"])
     candidate_model = Pipeline(
         [
+            ("impute", SimpleImputer(strategy="median")),
             ("scale", StandardScaler()),
             ("logistic", LogisticRegression(max_iter=1000)),
         ]

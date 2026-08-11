@@ -236,7 +236,6 @@ def build_features():
         subset=STATS
         + rolling_columns
         + ["rest_days"]
-        + list(PLAYER_HISTORY_FEATURES)
     )
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

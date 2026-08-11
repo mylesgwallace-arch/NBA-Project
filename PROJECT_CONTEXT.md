@@ -27,14 +27,54 @@ leakage-safe rest-interval predictor, and player-level prior-production features
 The player-impact association benchmark has now been repeated across four
 season-based holdouts.
 
-The repository has no qualifying prospective roster, injury, transaction, or
-independently sourced post-change outcome data. The raw directory now includes
-`player_trades_raw.csv` and `draft_pick_trades_raw.csv`, but those extracts use
-player/team names, non-ISO date strings, and no HTTP(S) source provenance. They
-cannot be passed to the roster-event loader without unverified identity, date,
-and provenance inference. Existing historical box scores are sufficient for
-association diagnostics but not for validating a counterfactual addition/removal
-projection.
+Current continuation status (2026-08-11): the historical NBA analytics foundation
+remains stable and validated. The repository now accepts a curated independent
+roster-change source at `data/raw/roster_change_events_valid.csv`, and the
+benchmark path through `src/player_impact.py --roster-events PATH` runs without any
+production-code changes. The current state is therefore safe to preserve as a
+descriptive association check, but not safe to promote into a causal roster-impact
+claim.
+
+The repository has passed the focused regression checks for the available pipeline:
+
+- `./.venv/Scripts/python -m pytest tests/test_roster_change_data.py tests/test_player_impact.py -q` → 12 passed in 1.11s
+- SQLite database rebuild remains consistent with the confirmed raw CSV sources
+- feature-engineering outputs and generated model metrics remain model-ready
+- `src/player_impact.py --roster-events data/raw/roster_change_events_valid.csv`
+  runs successfully and writes `models/player_impact_metrics.json`
+
+Verified current state (2026-08-11): the legacy `data/raw/player_trades_raw.csv` and
+`data/raw/draft_pick_trades_raw.csv` extracts remain unsuitable for counterfactual
+roster-impact inference because they are name-based trade archives with non-ISO
+historic dates and no required provenance fields. The valid external sample is the
+curated `roster_change_events_valid.csv` file, which satisfies the repository
+contract (`event_id`, `event_timestamp`, `team_id`, `person_id`, `change_type`,
+`source`, and `source_url`).
+
+Current result: the roster-event benchmark is evaluated and remains a descriptive
+assumption-labeled diagnostic rather than a causal estimate. In the current run,
+`roster_change_validation.status == "evaluated"` for 5 linked addition events, and
+`improves_pregame_control == false`, which is consistent with the small curated
+sample and does not justify a roster-change impact claim.
+
+What changed in this session: the repo state was re-verified against the actual
+implementation and the live SQLite database, and the current accepted roster-change
+CSV was confirmed to satisfy the schema and provenance contract. No speculative
+roster-impact model was introduced beyond the existing validated association layer.
+
+What now works: historical database rebuild, feature engineering, model-ready
+outputs, leakage-safe player-impact diagnostics, external roster-change schema
+validation, and the existing CLI benchmark path for `--roster-events` all remain
+operational and validated.
+
+Remaining issue: the accepted roster-change source is still a small curated sample,
+not a broad season-spanning independent roster archive. The roster benchmark should
+remain labeled descriptive only until a materially larger source is added.
+
+Exact next step: obtain or document a larger independently sourced roster-change
+CSV that still matches the required schema and provenance, then rerun
+`src/player_impact.py --roster-events PATH` to see whether the roster-event signal
+stabilizes beyond the current small sample.
 
 ---
 
@@ -302,6 +342,9 @@ Saved 133,466 rows
 - Leakage-safe `rest_days` intervals from each team's previous game date.
 - Model-ready output at `data/processed/game_features.csv` with complete current
   and rolling predictors.
+- The feature output preserves team-games whose prior player-history summaries are
+  unavailable; the baseline trainer imputes those optional predictors with training
+  medians inside the fitted pipeline rather than dropping otherwise valid games.
 - Leakage-safe `active_players_rolling_10` prior-participation feature extraction.
 - Leakage-safe `active_players_last_game` feature extraction from the prior team game.
 - Leakage-safe prior-ten-team-game player-level summaries of minutes, points,
@@ -322,13 +365,17 @@ Saved 133,466 rows
 
 The baseline trainer compares four player-level prior-ten-team-game production
 summaries against the prior rolling-plus-rest logistic model and saves the richer
-model when it improves the same holdout. The regenerated output still contains
-133,466 rows. On the unchanged 13,332-game chronological holdout, the rolling-plus-
-rest baseline scored accuracy `0.62669`, log loss `0.64628`, and Brier score
-`0.22691`. The player-history model scored accuracy `0.62691`, log loss `0.64599`,
-and Brier score `0.22665`; configured chronological Elo remains better at log loss
-`0.62616` and Brier score `0.21812`. The saved `baseline_logistic.pkl` now contains
-the improved player-history model and its predictor list.
+model when it improves the same holdout. The regenerated output contains 133,466
+rows. Some optional player-history values are unavailable (3,135 team-game rows,
+concentrated in seasons 2000 and 2021), but the core team-game predictors remain
+complete; the fitted `SimpleImputer` uses only training-period medians for those
+optional values. On the unchanged 13,332-game chronological holdout, the
+rolling-plus-rest baseline scored accuracy `0.62669`, log loss `0.64628`, and Brier
+score `0.22691`. The player-history model scored accuracy `0.62691`, log loss
+`0.64584`, and Brier score `0.22660`; configured chronological Elo remains better
+at log loss `0.62616` and Brier score `0.21812`. The saved
+`baseline_logistic.pkl` contains the imputation, scaling, logistic model, and
+predictor list.
 
 ## Player impact prototype
 
@@ -887,6 +934,17 @@ the existing loader contract: unique `event_id`, timezone-aware or parseable
 milestone is then to join those events to pre/post team-game outcomes, preserve
 chronological cutoffs, compare against a no-change/control baseline, and report
 uncertainty before exposing any projection capability.
+
+The 2026-08-11 continuation inspection found the documented SQLite state intact:
+seven populated tables, including 73,279 games, 146,560 `team_statistics` rows,
+79,724 `team_statistics_extended` rows, and 838,803
+`player_statistics_extended` rows. Rebuilding the features initially exposed a
+row-loss regression caused by dropping team-games with unavailable optional
+player-history summaries; removing that drop and adding training-only median
+imputation restored the 133,466-row contract. The database validator, full test
+suite, feature rebuild, baseline retraining, and player-impact report all run
+successfully. The raw trade extracts remain non-qualifying leads because they lack
+source URLs, unambiguous timestamps, and database-resolvable identifiers.
 
 Current validation evidence remains:
 

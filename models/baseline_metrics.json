@@ -60,8 +60,8 @@
     },
     "player_history_logistic": {
       "accuracy": 0.626912691269127,
-      "log_loss": 0.6459915397643575,
-      "brier_score": 0.22665453577013833
+      "log_loss": 0.6458411447343557,
+      "brier_score": 0.22659948585731537
     },
     "elo": {
       "accuracy": 0.6497149714971497,
