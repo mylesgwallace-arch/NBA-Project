@@ -26,11 +26,17 @@ ELO_PARAMETER_GRID = [
 
 
 def build_game_dataset(features):
+    player_history_columns = {
+        "player_minutes_rolling_10",
+        "player_points_rolling_10",
+        "player_assists_rolling_10",
+        "player_rebounds_rolling_10",
+    }
     rolling_columns = [
         column
         for column in features.columns
         if column.endswith("_rolling_10")
-        and column != "active_players_rolling_10"
+        and column not in {"active_players_rolling_10", *player_history_columns}
     ]
     predictor_columns = rolling_columns.copy()
     optional_team_predictors = [
@@ -38,6 +44,10 @@ def build_game_dataset(features):
         for column in [
             "active_players_rolling_10",
             "active_players_last_game",
+            "player_minutes_rolling_10",
+            "player_points_rolling_10",
+            "player_assists_rolling_10",
+            "player_rebounds_rolling_10",
             "rest_days",
         ]
         if column in features.columns
@@ -214,6 +224,12 @@ def evaluate_predictions(target, probabilities):
 def main():
     features = pd.read_csv(FEATURES_PATH)
     games, predictor_columns = build_game_dataset(features)
+    candidate_predictor_columns = predictor_columns
+    baseline_predictor_columns = [
+        column
+        for column in predictor_columns
+        if not column.startswith("player_")
+    ]
     games["season"] = pd.to_datetime(games["gameDateTimeEst"]).dt.year - (
         pd.to_datetime(games["gameDateTimeEst"]).dt.month < 10
     )
@@ -227,13 +243,25 @@ def main():
             ("logistic", LogisticRegression(max_iter=1000)),
         ]
     )
-    model.fit(train[predictor_columns], train["target"])
+    model.fit(train[baseline_predictor_columns], train["target"])
+    candidate_model = Pipeline(
+        [
+            ("scale", StandardScaler()),
+            ("logistic", LogisticRegression(max_iter=1000)),
+        ]
+    )
+    candidate_model.fit(train[candidate_predictor_columns], train["target"])
 
     home_rate = train["target"].mean()
     predictions = {
         "home_win_rate": pd.Series(home_rate, index=test.index),
         "rolling_logistic": pd.Series(
-            model.predict_proba(test[predictor_columns])[:, 1], index=test.index
+            model.predict_proba(test[baseline_predictor_columns])[:, 1],
+            index=test.index,
+        ),
+        "player_history_logistic": pd.Series(
+            candidate_model.predict_proba(test[candidate_predictor_columns])[:, 1],
+            index=test.index,
         ),
     }
     metrics = {
@@ -255,7 +283,9 @@ def main():
         "test_games": len(test),
         "test_fraction": TEST_FRACTION,
         "split_start": test["gameDateTimeEst"].iloc[0],
-        "predictors": predictor_columns,
+        "predictors": baseline_predictor_columns,
+        "candidate_predictors": candidate_predictor_columns,
+        "saved_model": "player_history_logistic",
         "elo": {
             "initial_rating": ELO_INITIAL_RATING,
             "k_factor": ELO_K_FACTOR,
@@ -269,7 +299,10 @@ def main():
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     with MODEL_PATH.open("wb") as output:
-        pickle.dump({"model": model, "predictors": predictor_columns}, output)
+        pickle.dump(
+            {"model": candidate_model, "predictors": candidate_predictor_columns},
+            output,
+        )
     METRICS_PATH.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
     print(f"Complete games: {len(games):,}")

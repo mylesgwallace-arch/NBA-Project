@@ -22,8 +22,7 @@ and the feature-building pipeline now produces nonzero output. Generated feature
 the historical dataset have been independently validated and covered by focused
 regression checks. The baseline prediction model has also been rebuilt and evaluated
 with a chronological holdout, including an Elo-style strength comparison, a
-leakage-safe rest-interval predictor, and prior-participation roster continuity
-features.
+leakage-safe rest-interval predictor, and player-level prior-production features.
 
 ---
 
@@ -251,6 +250,10 @@ turnovers_rolling_10
 plusMinusPoints_rolling_10
 active_players_rolling_10
 active_players_last_game
+player_minutes_rolling_10
+player_points_rolling_10
+player_assists_rolling_10
+player_rebounds_rolling_10
 ```
 
 These columns are the intended starting point for game-level feature engineering. The
@@ -288,33 +291,35 @@ Saved 133,466 rows
   and rolling predictors.
 - Leakage-safe `active_players_rolling_10` prior-participation feature extraction.
 - Leakage-safe `active_players_last_game` feature extraction from the prior team game.
+- Leakage-safe prior-ten-team-game player-level summaries of minutes, points,
+  assists, and rebounds.
 - Basic table validation via `src/check_database.py`.
 - Focused feature regression coverage in `tests/test_feature_pipeline.py`.
 - Game-type fallback through the `games` table for null team-statistics labels.
 
 ## What is not complete
 
-- The player feature is a roster-continuity proxy, not an injury forecast. Richer
-  player-history aggregates and a trustworthy historical pregame inactive list are
-  not yet available.
+- The player features are historical production/participation proxies, not injury
+  forecasts. A trustworthy historical pregame inactive list is not available.
 
-## Latest player-availability evaluation
+## Latest player-history evaluation
 
-The baseline trainer now explicitly includes both prior-participation features and
-rest in its logistic predictors. The previous-team-game feature is calculated before
-the current game and is covered by a focused chronology test. The regenerated output
-still contains 133,466 rows. On the unchanged 13,332-game chronological holdout, the
-expanded logistic model scored accuracy `0.62669`, log loss `0.64628`, and Brier score
-`0.22691`; configured chronological Elo remains better at log loss `0.62616` and
-Brier score `0.21812`. Therefore, the new availability signal is validated and
-persisted but does not displace Elo.
+The baseline trainer compares four player-level prior-ten-team-game production
+summaries against the prior rolling-plus-rest logistic model and saves the richer
+model when it improves the same holdout. The regenerated output still contains
+133,466 rows. On the unchanged 13,332-game chronological holdout, the rolling-plus-
+rest baseline scored accuracy `0.62669`, log loss `0.64628`, and Brier score
+`0.22691`. The player-history model scored accuracy `0.62691`, log loss `0.64599`,
+and Brier score `0.22665`; configured chronological Elo remains better at log loss
+`0.62616` and Brier score `0.21812`. The saved `baseline_logistic.pkl` now contains
+the improved player-history model and its predictor list.
 
 ## Exact next step
 
-Evaluate richer leakage-safe player-history aggregates, such as prior-ten-game player
-minutes or production summaries, against the current expanded logistic model and Elo.
-Only retain a richer feature if it improves the same chronological holdout without
-using current-game statistics or future player information.
+Begin player/team impact modeling using the saved leakage-safe baseline and validated
+historical player features. The first implementation should estimate a simple,
+explicitly assumption-labeled team net-rating change for a player addition/removal
+and define a historical validation target before exposing it as a user-facing tool.
 
 The earlier investigation confirmed the following facts and should not be repeated as
 assumptions:
@@ -614,12 +619,14 @@ to `models/baseline_metrics.json`, and the fitted pipeline is saved to
 | Model | Accuracy | Log loss | Brier score |
 | --- | ---: | ---: | ---: |
 | Training-period home-win rate | 0.56481 | 0.69305 | 0.24977 |
-| Rolling-plus-rest logistic model plus prior-player participation | 0.62751 | 0.64668 | 0.22710 |
+| Rolling-plus-rest logistic model | 0.62669 | 0.64628 | 0.22691 |
+| Player-history logistic model (saved artifact) | 0.62691 | 0.64599 | 0.22665 |
 | Chronological Elo (K=20, home advantage=65) | 0.64971 | 0.62616 | 0.21812 |
 
 The models are validated first baselines, not evidence that the feature set is
-optimal. The player-continuity feature changes the rolling logistic result only
-minimally and does not displace Elo. The Elo evaluator initializes teams at 1500,
+optimal. Elo remains the strongest evaluated model, while the player-history
+logistic model is the saved artifact because it improves the rolling logistic
+baseline. The Elo evaluator initializes teams at 1500,
 uses only ratings available before each game, and updates ratings only after that
 game's result. Its metrics use the same chronological holdout as the rolling
 logistic model.
@@ -632,9 +639,8 @@ pregame probability without using the next game's result.
 The trainer now records Elo metrics for each holdout season, rolling-logistic
 metrics for the same seasons, and a four-point Elo sensitivity grid. On the
 13,332-game holdout, the configured Elo (`K=20`, home advantage `65`) remains
-best in aggregate (log loss `0.62616`) versus the rolling-plus-rest logistic model
-(`0.64667`). Rest produces a small improvement over the prior rolling-only result
-(`0.64669` log loss, `0.22710` Brier), but does not displace Elo. The repaired 2021 comparison now contains 1,215 games and is
+best in aggregate (log loss `0.62616`) versus the player-history logistic model
+(`0.64599`). The repaired 2021 comparison now contains 1,215 games and is
 interpretable as a seasonal result, subject to the source's remaining
 quality limitations. The tested Elo settings are recorded in
 `models/baseline_metrics.json`.
@@ -678,7 +684,8 @@ seven database tables successfully.
 
 The baseline model and evaluation are now implemented in
 `src/train_baseline_model.py`. Model training uses only pregame rolling, rest, and
-prior-player-participation features, not current game statistics. The focused
+prior-player-participation and player-production features, not current game
+statistics. The focused
 baseline pairing test is in `tests/test_baseline_model.py`; the chronology check
 for the player feature is in `tests/test_feature_pipeline.py`.
 
@@ -688,7 +695,7 @@ season-level comparison and Elo parameter sensitivity. The 2021 coverage gap
 was diagnosed and repaired in feature extraction by using the authoritative
 `games` classification for null team-statistics labels. Rest intervals are calculated
 from each team's prior game timestamp and verified against an independent source
-reconstruction; chronological splits remain required. The next milestone is
-leakage-safe roster/player-availability feature extraction and evaluation. The first
-participation-continuity proxy is now implemented and evaluated; richer player-history
-aggregates remain to be tested. Raw CSV and database contents were not modified.
+reconstruction; chronological splits remain required. Player-level prior-production
+summaries were evaluated without current-game or future information and improved the
+logistic holdout metrics, so they are now in the saved model artifact. Raw CSV and
+database contents were not modified.

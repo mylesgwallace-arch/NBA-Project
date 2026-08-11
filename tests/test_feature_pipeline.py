@@ -136,3 +136,49 @@ def test_pregame_player_feature_uses_only_previous_team_games():
 
     assert result[PLAYER_FEATURE].tolist() == [0, 2]
     assert result[LAST_GAME_PLAYER_FEATURE].tolist() == [0, 2]
+
+
+def test_pregame_player_history_uses_only_previous_team_games():
+    team_games = pd.DataFrame(
+        [
+            {"gameId": 1, "teamId": 10, "gameDateTimeEst": "2020-01-01"},
+            {"gameId": 2, "teamId": 10, "gameDateTimeEst": "2020-01-02"},
+            {"gameId": 3, "teamId": 10, "gameDateTimeEst": "2020-01-03"},
+        ]
+    )
+    activity = pd.DataFrame(
+        [
+            {"gameId": 1, "teamId": 10, "personId": 100},
+            {"gameId": 2, "teamId": 10, "personId": 100},
+        ]
+    )
+    player_history = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "teamId": 10,
+                "personId": 100,
+                "minutes": 200,
+                "points": 100,
+                "assists": 20,
+                "rebounds": 40,
+            },
+            {
+                "gameId": 2,
+                "teamId": 10,
+                "personId": 100,
+                "minutes": 210,
+                "points": 110,
+                "assists": 22,
+                "rebounds": 42,
+            },
+        ]
+    )
+
+    result = add_pregame_player_features(team_games, activity, player_history)
+
+    assert result["player_minutes_rolling_10"].isna().iloc[0]
+    assert not pd.isna(result["player_minutes_rolling_10"].iloc[1])
+    assert result["player_minutes_rolling_10"].iloc[1] == 200
+    assert result["player_minutes_rolling_10"].iloc[2] == 205
+    assert result["player_points_rolling_10"].iloc[2] == 105

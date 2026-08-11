@@ -21,6 +21,27 @@
     "active_players_last_game",
     "rest_days"
   ],
+  "candidate_predictors": [
+    "teamScore_rolling_10",
+    "opponentScore_rolling_10",
+    "assists_rolling_10",
+    "steals_rolling_10",
+    "blocks_rolling_10",
+    "fieldGoalsPercentage_rolling_10",
+    "threePointersPercentage_rolling_10",
+    "freeThrowsPercentage_rolling_10",
+    "reboundsTotal_rolling_10",
+    "turnovers_rolling_10",
+    "plusMinusPoints_rolling_10",
+    "active_players_rolling_10",
+    "active_players_last_game",
+    "player_minutes_rolling_10",
+    "player_points_rolling_10",
+    "player_assists_rolling_10",
+    "player_rebounds_rolling_10",
+    "rest_days"
+  ],
+  "saved_model": "player_history_logistic",
   "elo": {
     "initial_rating": 1500.0,
     "k_factor": 20.0,
@@ -36,6 +57,11 @@
       "accuracy": 0.6266876687668766,
       "log_loss": 0.6462768658121684,
       "brier_score": 0.2269053106508747
+    },
+    "player_history_logistic": {
+      "accuracy": 0.626912691269127,
+      "log_loss": 0.6459915397643575,
+      "brier_score": 0.22665453577013833
     },
     "elo": {
       "accuracy": 0.6497149714971497,

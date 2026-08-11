@@ -30,6 +30,12 @@ PERCENTAGE_STATS = [
 ]
 PLAYER_FEATURE = "active_players_rolling_10"
 LAST_GAME_PLAYER_FEATURE = "active_players_last_game"
+PLAYER_HISTORY_FEATURES = {
+    "player_minutes_rolling_10": "minutes",
+    "player_points_rolling_10": "points",
+    "player_assists_rolling_10": "assists",
+    "player_rebounds_rolling_10": "rebounds",
+}
 
 
 def load_team_games(connection):
@@ -71,7 +77,29 @@ def load_player_activity(connection):
     )
 
 
-def add_pregame_player_features(team_games, activity):
+def load_player_history(connection):
+    return pd.read_sql_query(
+        """
+        SELECT player_statistics.gameId,
+               player_statistics.playerteamId AS teamId,
+               player_statistics.personId,
+               SUM(COALESCE(CAST(player_statistics.numMinutes AS REAL), 0)) AS minutes,
+               SUM(COALESCE(player_statistics.points, 0)) AS points,
+               SUM(COALESCE(player_statistics.assists, 0)) AS assists,
+               SUM(COALESCE(player_statistics.reboundsTotal, 0)) AS rebounds
+        FROM player_statistics
+        JOIN games ON games.gameId = player_statistics.gameId
+        WHERE COALESCE(player_statistics.gameType, games.gameType) =
+              'Regular Season'
+          AND player_statistics.playerteamId IS NOT NULL
+        GROUP BY player_statistics.gameId, player_statistics.playerteamId,
+                 player_statistics.personId
+        """,
+        connection,
+    )
+
+
+def add_pregame_player_features(team_games, activity, player_history=None):
     activity_by_game = (
         activity.groupby(["teamId", "gameId"])["personId"].agg(set).to_dict()
     )
@@ -103,18 +131,81 @@ def add_pregame_player_features(team_games, activity):
         index=team_games.index,
         name=LAST_GAME_PLAYER_FEATURE,
     )
-    return team_games.assign(
+    result = team_games.assign(
         **{
             PLAYER_FEATURE: feature,
             LAST_GAME_PLAYER_FEATURE: last_game_feature,
         }
     )
+    if player_history is None:
+        return result
+
+    history_by_game = {}
+    for row in player_history.itertuples(index=False):
+        history_by_game.setdefault((row.teamId, row.gameId), []).append(row)
+    history_values = {}
+    for team_id, games in team_games.groupby("teamId", sort=False):
+        prior_history = {}
+        prior_games = deque()
+        feature_totals = {feature_name: 0.0 for feature_name in PLAYER_HISTORY_FEATURES}
+
+        def update_player(person_id, values, direction):
+            player_values = prior_history.setdefault(
+                person_id,
+                {
+                    feature_name: deque()
+                    for feature_name in PLAYER_HISTORY_FEATURES
+                },
+            )
+            for feature_name, value in values.items():
+                values_for_player = player_values[feature_name]
+                if values_for_player:
+                    feature_totals[feature_name] -= np.mean(values_for_player)
+                if direction == 1:
+                    values_for_player.append(value)
+                else:
+                    values_for_player.popleft()
+                if values_for_player:
+                    feature_totals[feature_name] += np.mean(values_for_player)
+
+        for row in games.sort_values(["gameDateTimeEst", "gameId"]).itertuples():
+            key = (team_id, row.gameId)
+            for feature_name in PLAYER_HISTORY_FEATURES:
+                history_values[(row.gameId, team_id, feature_name)] = (
+                    feature_totals[feature_name]
+                    if any(
+                        values[feature_name] for values in prior_history.values()
+                    )
+                    else np.nan
+                )
+            current_game = []
+            for historical_row in history_by_game.get(key, []):
+                values = {
+                    feature_name: getattr(historical_row, source_column)
+                    for feature_name, source_column in PLAYER_HISTORY_FEATURES.items()
+                }
+                current_game.append((historical_row.personId, values))
+                update_player(historical_row.personId, values, 1)
+            prior_games.append(current_game)
+            if len(prior_games) > 10:
+                for person_id, values in prior_games.popleft():
+                    update_player(person_id, values, -1)
+
+    for feature_name in PLAYER_HISTORY_FEATURES:
+        result[feature_name] = [
+            history_values[(game_id, team_id, feature_name)]
+            for game_id, team_id in zip(
+                result["gameId"], result["teamId"]
+            )
+        ]
+    return result
 
 
 def build_features():
     with sqlite3.connect(DB_PATH) as connection:
         df = load_team_games(connection)
         activity = load_player_activity(connection)
+        player_history = load_player_history(connection)
 
     print(f"Loaded {len(df):,} team-game rows")
     df["gameDateTimeEst"] = pd.to_datetime(df["gameDateTimeEst"])
@@ -139,9 +230,14 @@ def build_features():
             .transform(lambda values: values.shift(1).rolling(10, min_periods=5).mean())
         )
 
-    df = add_pregame_player_features(df, activity)
+    df = add_pregame_player_features(df, activity, player_history)
     rolling_columns = [f"{stat}_rolling_10" for stat in STATS]
-    df = df.dropna(subset=STATS + rolling_columns + ["rest_days"])
+    df = df.dropna(
+        subset=STATS
+        + rolling_columns
+        + ["rest_days"]
+        + list(PLAYER_HISTORY_FEATURES)
+    )
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUTPUT_PATH, index=False)
