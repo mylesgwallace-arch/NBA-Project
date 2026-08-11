@@ -68,3 +68,41 @@ def test_naive_timestamps_are_accepted_and_normalized_to_utc():
     result = validate_roster_change_events(events)
 
     assert result.loc[0, "event_timestamp"].tzinfo is not None
+
+
+def test_basketball_reference_add_event_is_resolved_to_repo_ids():
+    from bs4 import BeautifulSoup
+
+    from src.roster_change_data import _transaction_paragraph_to_events, load_player_registry, load_team_registry
+
+    players = load_player_registry()
+    team_histories = load_team_registry()
+    paragraph = BeautifulSoup(
+        '<p>The <a data-attr-to="BOS" href="/teams/BOS/1990.html">Boston Celtics</a> signed <a href="/players/a/abdelal01.html">Alaa Abdelnaby</a> to a contract extension.</p>',
+        "html.parser",
+    ).find("p")
+
+    result = _transaction_paragraph_to_events(paragraph, 1990, players=players, team_histories=team_histories)
+
+    assert result and result[0]["change_type"] == "add"
+    assert result[0]["team_id"] == 1610612738
+    assert result[0]["person_id"] == 76001
+
+
+def test_basketball_reference_trade_event_is_split_into_two_roster_moves():
+    from bs4 import BeautifulSoup
+
+    from src.roster_change_data import _transaction_paragraph_to_events, load_player_registry, load_team_registry
+
+    players = load_player_registry()
+    team_histories = load_team_registry()
+    paragraph = BeautifulSoup(
+        '<p>The <a data-attr-from="BOS" href="/teams/BOS/1990.html">Boston Celtics</a> traded <a href="/players/a/abdelal01.html">Alaa Abdelnaby</a> to the <a data-attr-to="LAL" href="/teams/LAL/1990.html">Los Angeles Lakers</a> for <a href="/players/a/abernte01.html">Tom Abernethy</a>.</p>',
+        "html.parser",
+    ).find("p")
+
+    result = _transaction_paragraph_to_events(paragraph, 1990, players=players, team_histories=team_histories)
+
+    assert len(result) == 4
+    assert {item["change_type"] for item in result} == {"remove", "add"}
+    assert {item["person_id"] for item in result} == {76001, 76005}

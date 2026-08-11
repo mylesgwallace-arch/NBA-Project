@@ -76,6 +76,30 @@ CSV that still matches the required schema and provenance, then rerun
 `src/player_impact.py --roster-events PATH` to see whether the roster-event signal
 stabilizes beyond the current small sample.
 
+Implementation update (2026-08-11): a safe Basketball-Reference ingestion pipeline
+was added to `src/roster_change_data.py` for the 2022-2025 season pages. The code
+fetches transaction pages using browser-like headers, resolves player/team names to
+the repository `personId`/`teamId` registry, emits only valid `add`/`remove` roster
+moves, and keeps unresolved rows in a separate review frame instead of inventing
+missing identity matches. The canonical roster-event contract is preserved, and the
+season label is explicitly anchored to the BBR season page rather than raw calendar-year
+counts so offseason transactions remain associated with the applicable NBA benchmark
+season.
+
+Benchmark result (2026-08-11): running `src/player_impact.py --roster-events
+data/processed/bbr_roster_changes_2022_2025.csv` produced a valid 3,605-event BBR
+sample with `event_source` = `external_timestamped_additions`, `transition_player_games`
+= 1,213, `evaluated_transition_events` = 707, `improves_pregame_control` = `true`,
+`pregame_control_mae` = 12.3877, and `candidate_mae` = 12.3491. The BBR roster
+benchmark therefore remains a descriptive association check, not a causal estimate:
+its holdout improves on the pregame control marginally, but the effect is small and the
+sample still includes nontrivial ambiguity around same-team extensions and trade language.
+
+Exact next step: review the unresolved BBR rows for the same-team contract/ambiguity edge
+cases and decide whether the 3,605-event external source is large enough to replace the
+curated sample for a descriptive benchmark; if it remains unstable, keep the roster signal
+labeled as an association diagnostic and avoid promoting it to a causal impact claim.
+
 ---
 
 # 2. Current Repository
