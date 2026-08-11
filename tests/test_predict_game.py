@@ -1,6 +1,14 @@
+import json
+
 import pandas as pd
 
-from src.main import build_prediction_row, lookup_last_team_row
+from src.main import (
+    build_prediction_row,
+    compute_elo_ratings_as_of,
+    load_recommended_model_name,
+    lookup_last_team_row,
+    predict_matchup,
+)
 
 
 def test_build_prediction_row_uses_home_minus_away_differences():
@@ -52,3 +60,112 @@ def test_lookup_last_team_row_respects_game_date_cutoff():
     row = lookup_last_team_row(features, team_id=10, game_date="2020-01-04")
 
     assert row["teamScore_rolling_10"] == 102.0
+
+
+def _sample_games():
+    return pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "gameDateTimeEst": pd.Timestamp("2020-01-01"),
+                "homeTeamId": 10,
+                "awayTeamId": 20,
+                "target": 1,
+            },
+            {
+                "gameId": 2,
+                "gameDateTimeEst": pd.Timestamp("2020-01-05"),
+                "homeTeamId": 20,
+                "awayTeamId": 10,
+                "target": 0,
+            },
+            {
+                "gameId": 3,
+                "gameDateTimeEst": pd.Timestamp("2020-01-10"),
+                "homeTeamId": 10,
+                "awayTeamId": 30,
+                "target": 1,
+            },
+        ]
+    )
+
+
+def test_compute_elo_ratings_as_of_only_uses_games_before_cutoff():
+    games = _sample_games()
+
+    ratings, seen_teams = compute_elo_ratings_as_of(
+        games, cutoff=pd.Timestamp("2020-01-05"), k_factor=20.0, home_advantage=0.0
+    )
+
+    # Only the 2020-01-01 game (10 beat 20) should have been applied; the
+    # 2020-01-05 game itself is on the cutoff and must be excluded, and
+    # team 30 has not appeared yet.
+    assert seen_teams == {10, 20}
+    assert ratings[10] > 1500.0
+    assert ratings[20] < 1500.0
+    assert 30 not in ratings
+
+
+def test_compute_elo_ratings_as_of_uses_all_games_when_cutoff_is_none():
+    games = _sample_games()
+
+    ratings, seen_teams = compute_elo_ratings_as_of(games, cutoff=None)
+
+    assert seen_teams == {10, 20, 30}
+
+
+def test_load_recommended_model_name_falls_back_when_metrics_file_missing(tmp_path):
+    missing_path = tmp_path / "does_not_exist.json"
+
+    assert load_recommended_model_name(missing_path) == "player_history_logistic"
+
+
+def test_predict_matchup_uses_elo_when_recommended(tmp_path):
+    features_path = tmp_path / "game_features.csv"
+    metrics_path = tmp_path / "baseline_metrics.json"
+
+    features = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-01",
+                "teamId": 10,
+                "home": 1,
+                "win": 1,
+                "teamScore_rolling_10": 100,
+            },
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-01",
+                "teamId": 20,
+                "home": 0,
+                "win": 0,
+                "teamScore_rolling_10": 95,
+            },
+        ]
+    )
+    features.to_csv(features_path, index=False)
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "recommended_model": "elo",
+                "elo": {
+                    "initial_rating": 1500.0,
+                    "k_factor": 20.0,
+                    "home_advantage": 65.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = predict_matchup(
+        home_team_id=10,
+        away_team_id=20,
+        features_path=features_path,
+        metrics_path=metrics_path,
+    )
+
+    assert result["model"] == "elo"
+    assert "feature_snapshot_date" not in result
+    assert result["home_win_probability"] > result["away_win_probability"]

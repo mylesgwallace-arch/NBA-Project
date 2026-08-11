@@ -222,6 +222,22 @@ def evaluate_predictions(target, probabilities):
     }
 
 
+def select_recommended_model(metrics, candidates=None, ranking_metric="log_loss"):
+    """Pick the best-performing candidate model on the chronological holdout.
+
+    Log loss is used as the default ranking metric because it rewards
+    calibrated probabilities rather than only the 0.5-threshold decision,
+    which matches the project's probabilistic-prediction evaluation guidance.
+    ``home_win_rate`` is excluded by default because it is a trivial baseline
+    used only as a reference point, not a deployable prediction.
+    """
+    if candidates is None:
+        candidates = [name for name in metrics if name != "home_win_rate"]
+    if not candidates:
+        raise ValueError("No candidate models available to select from.")
+    return min(candidates, key=lambda name: metrics[name][ranking_metric])
+
+
 def main():
     features = pd.read_csv(FEATURES_PATH)
     games, predictor_columns = build_game_dataset(features)
@@ -279,6 +295,7 @@ def main():
         predictions["rolling_logistic"],
         test["season"],
     )
+    recommended_model = select_recommended_model(metrics)
     metadata = {
         "feature_rows": len(features),
         "complete_games": len(games),
@@ -289,6 +306,8 @@ def main():
         "predictors": baseline_predictor_columns,
         "candidate_predictors": candidate_predictor_columns,
         "saved_model": "player_history_logistic",
+        "recommended_model": recommended_model,
+        "recommendation_metric": "log_loss",
         "elo": {
             "initial_rating": ELO_INITIAL_RATING,
             "k_factor": ELO_K_FACTOR,
@@ -318,6 +337,7 @@ def main():
         )
     print(f"Saved model to: {MODEL_PATH}")
     print(f"Saved metrics to: {METRICS_PATH}")
+    print(f"Recommended model (lowest holdout log loss): {recommended_model}")
 
 
 if __name__ == "__main__":

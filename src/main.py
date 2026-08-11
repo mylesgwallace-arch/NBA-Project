@@ -5,16 +5,69 @@ from pathlib import Path
 
 import pandas as pd
 
+try:
+    from src.train_baseline_model import build_game_dataset, elo_win_probability
+except ImportError:
+    # Support running this file directly (e.g. `python src/main.py`), where
+    # `src` is not importable as a package because the script's own directory
+    # is placed on sys.path instead of the repository root.
+    from train_baseline_model import build_game_dataset, elo_win_probability
+
 
 ROOT = Path(__file__).resolve().parents[1]
 FEATURES_PATH = ROOT / "data" / "processed" / "game_features.csv"
 MODEL_PATH = ROOT / "models" / "baseline_logistic.pkl"
+METRICS_PATH = ROOT / "models" / "baseline_metrics.json"
 
 
 def load_model(model_path=MODEL_PATH):
     with model_path.open("rb") as handle:
         model_bundle = pickle.load(handle)
     return model_bundle["model"], model_bundle["predictors"]
+
+
+def load_recommended_model_name(metrics_path=METRICS_PATH, default="player_history_logistic"):
+    """Read which model the validated holdout comparison recommends.
+
+    Falls back to the logistic model name if no metrics file is present,
+    so the CLI still works before `train_baseline_model.py` has been run.
+    """
+    if not metrics_path.exists():
+        return default
+    metadata = json.loads(metrics_path.read_text(encoding="utf-8"))
+    return metadata.get("recommended_model", default)
+
+
+def load_elo_config(metrics_path=METRICS_PATH):
+    metadata = json.loads(metrics_path.read_text(encoding="utf-8"))
+    return metadata["elo"]
+
+
+def compute_elo_ratings_as_of(games, cutoff=None, initial_rating=1500.0, k_factor=20.0, home_advantage=65.0):
+    """Compute Elo ratings from only the games that occurred before ``cutoff``.
+
+    ``games`` must already be sorted chronologically (as returned by
+    ``build_game_dataset``), so the scan can stop at the first game on or
+    after the cutoff without looking at any information the CLI caller would
+    not have had available before that date.
+    """
+    ratings = {}
+    seen_teams = set()
+    for _, game in games.iterrows():
+        game_date = game["gameDateTimeEst"]
+        if cutoff is not None and game_date >= cutoff:
+            break
+        home_team = game["homeTeamId"]
+        away_team = game["awayTeamId"]
+        home_rating = ratings.get(home_team, initial_rating)
+        away_rating = ratings.get(away_team, initial_rating)
+        probability = elo_win_probability(home_rating, away_rating, home_advantage)
+        outcome = game["target"]
+        ratings[home_team] = home_rating + k_factor * (outcome - probability)
+        ratings[away_team] = away_rating + k_factor * ((1 - outcome) - (1 - probability))
+        seen_teams.add(home_team)
+        seen_teams.add(away_team)
+    return ratings, seen_teams
 
 
 def lookup_last_team_row(features, team_id, game_date=None):
@@ -48,36 +101,92 @@ def build_prediction_row(home_row, away_row, predictor_columns):
     return pd.DataFrame([row])
 
 
+def predict_matchup_logistic(
+    home_team_id,
+    away_team_id,
+    game_date,
+    features,
+    model_path,
+):
+    model, predictor_columns = load_model(model_path)
+    home_row = lookup_last_team_row(features, home_team_id, game_date)
+    away_row = lookup_last_team_row(features, away_team_id, game_date)
+    prediction_frame = build_prediction_row(home_row, away_row, predictor_columns)
+    home_probability = float(model.predict_proba(prediction_frame)[0, 1])
+
+    return home_probability, {
+        "home": str(pd.Timestamp(home_row["gameDateTimeEst"]).date()),
+        "away": str(pd.Timestamp(away_row["gameDateTimeEst"]).date()),
+    }
+
+
+def predict_matchup_elo(
+    home_team_id,
+    away_team_id,
+    game_date,
+    features,
+    metrics_path,
+):
+    elo_config = load_elo_config(metrics_path)
+    games, _ = build_game_dataset(features)
+    games["gameDateTimeEst"] = pd.to_datetime(games["gameDateTimeEst"])
+    cutoff = pd.Timestamp(game_date) if game_date is not None else None
+
+    ratings, seen_teams = compute_elo_ratings_as_of(
+        games,
+        cutoff=cutoff,
+        initial_rating=elo_config["initial_rating"],
+        k_factor=elo_config["k_factor"],
+        home_advantage=elo_config["home_advantage"],
+    )
+    for team_id in (home_team_id, away_team_id):
+        if team_id not in seen_teams:
+            cutoff_message = f" on or before {game_date}" if game_date else ""
+            raise ValueError(
+                f"No completed games found for teamId={team_id}{cutoff_message}; "
+                "cannot compute an Elo rating."
+            )
+
+    home_probability = elo_win_probability(
+        ratings[home_team_id], ratings[away_team_id], elo_config["home_advantage"]
+    )
+    return home_probability, None
+
+
 def predict_matchup(
     home_team_id,
     away_team_id,
     game_date=None,
     features_path=FEATURES_PATH,
     model_path=MODEL_PATH,
+    metrics_path=METRICS_PATH,
 ):
     features = pd.read_csv(features_path)
     features["gameDateTimeEst"] = pd.to_datetime(features["gameDateTimeEst"])
 
-    model, predictor_columns = load_model(model_path)
-    home_row = lookup_last_team_row(features, home_team_id, game_date)
-    away_row = lookup_last_team_row(features, away_team_id, game_date)
-    prediction_frame = build_prediction_row(home_row, away_row, predictor_columns)
-    home_probability = float(model.predict_proba(prediction_frame)[0, 1])
+    recommended_model = load_recommended_model_name(metrics_path)
+    if recommended_model == "elo":
+        home_probability, feature_snapshot_date = predict_matchup_elo(
+            home_team_id, away_team_id, game_date, features, metrics_path
+        )
+    else:
+        home_probability, feature_snapshot_date = predict_matchup_logistic(
+            home_team_id, away_team_id, game_date, features, model_path
+        )
     away_probability = 1.0 - home_probability
 
-    return {
+    result = {
         "home_team_id": int(home_team_id),
         "away_team_id": int(away_team_id),
         "game_date": None if game_date is None else str(pd.Timestamp(game_date).date()),
-        "model": "baseline_logistic",
+        "model": recommended_model,
         "home_win_probability": round(home_probability, 6),
         "away_win_probability": round(away_probability, 6),
         "home_team_prediction": "favorite" if home_probability >= 0.5 else "underdog",
-        "feature_snapshot_date": {
-            "home": str(pd.Timestamp(home_row["gameDateTimeEst"]).date()),
-            "away": str(pd.Timestamp(away_row["gameDateTimeEst"]).date()),
-        },
     }
+    if feature_snapshot_date is not None:
+        result["feature_snapshot_date"] = feature_snapshot_date
+    return result
 
 
 def parse_args(argv=None):

@@ -7,6 +7,7 @@ from src.train_baseline_model import (
     elo_win_probability,
     evaluate_elo,
     evaluate_elo_by_season,
+    select_recommended_model,
 )
 
 
@@ -183,3 +184,25 @@ def test_elo_season_metrics_use_pregame_ratings_and_report_games():
     assert metrics["2020"]["games"] == 1
     assert metrics["2019"]["accuracy"] == 0.0
     assert metrics["2020"]["accuracy"] == 0.0
+
+
+def test_select_recommended_model_uses_lowest_log_loss():
+    metrics = {
+        "home_win_rate": {"accuracy": 0.5, "log_loss": 0.69, "brier_score": 0.25},
+        "rolling_logistic": {"accuracy": 0.62, "log_loss": 0.65, "brier_score": 0.23},
+        "elo": {"accuracy": 0.65, "log_loss": 0.62, "brier_score": 0.21},
+    }
+
+    assert select_recommended_model(metrics) == "elo"
+
+
+def test_select_recommended_model_excludes_trivial_home_win_rate_baseline():
+    # home_win_rate should never be "recommended" even if it happens to have
+    # the lowest log loss on some slice, because it is a reference baseline,
+    # not a deployable model.
+    metrics = {
+        "home_win_rate": {"accuracy": 0.5, "log_loss": 0.1, "brier_score": 0.05},
+        "rolling_logistic": {"accuracy": 0.62, "log_loss": 0.65, "brier_score": 0.23},
+    }
+
+    assert select_recommended_model(metrics) == "rolling_logistic"
