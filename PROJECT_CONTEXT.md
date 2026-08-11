@@ -16,10 +16,10 @@ The immediate objective was to restore the raw CSV to SQLite to feature-engineer
 pipeline after `src/build_features.py` loaded 0 team-game rows.
 
 That blocker is resolved. The database was rebuilt from the confirmed raw CSV files,
-and the feature-building pipeline now produces nonzero output. Generated features
-and the historical dataset have now been independently validated and covered by
-focused regression checks. The baseline prediction model has also been rebuilt and
-evaluated with a chronological holdout.
+and the feature-building pipeline now produces nonzero output. Generated features and the historical dataset have now been independently validated
+and covered by focused regression checks. The baseline prediction model has also been
+rebuilt and evaluated with a chronological holdout, including an Elo-style strength
+comparison.
 
 ---
 
@@ -277,17 +277,16 @@ Saved 129,836 rows
 ## What is not complete
 
 - The baseline model uses only team rolling history and does not yet include
-  opponent-strength, rest, roster, or player-availability features.
+  rest, roster, or player-availability features.
 - The feature pipeline now labels `season` by the calendar year in which the NBA
   season starts: October-December use that year, and January-September use the
   preceding year.
 
 ## Exact next step
 
-Compare the validated rolling logistic baseline against a second leakage-safe
-strength baseline, such as an Elo-style rating calculated chronologically from
-completed games. Keep the same chronological holdout and metrics before adding
-new feature families.
+Investigate whether the Elo-style strength baseline remains robust across seasons
+and parameter choices, then compare it with the rolling logistic model by season
+before adding new feature families.
 
 The earlier investigation confirmed the following facts and should not be repeated as
 assumptions:
@@ -586,10 +585,17 @@ to `models/baseline_metrics.json`, and the fitted pipeline is saved to
 | --- | ---: | ---: | ---: |
 | Training-period home-win rate | 0.56788 | 0.69179 | 0.24914 |
 | Rolling-feature logistic model | 0.62971 | 0.64327 | 0.22575 |
+| Chronological Elo (K=20, home advantage=65) | 0.65184 | 0.62403 | 0.21727 |
 
-The model is a validated first baseline, not evidence that the feature set is
-optimal. The next evaluation should add a chronological Elo-style comparison
-before attempting feature improvements.
+The models are validated first baselines, not evidence that the feature set is
+optimal. The Elo evaluator initializes teams at 1500, uses only ratings available
+before each game, and updates ratings only after that game's result. Its metrics use
+the same chronological holdout as the rolling logistic model.
+
+The Elo comparison is implemented in `src/train_baseline_model.py`, with fixed
+parameters recorded in `models/baseline_metrics.json`. The focused baseline tests
+also verify that an Elo rating update from one completed game affects the next
+pregame probability without using the next game's result.
 
 ## Historical dataset validation
 
@@ -632,3 +638,9 @@ The baseline model and evaluation are now implemented in
 `src/train_baseline_model.py`. Model training uses only pregame rolling features,
 not current game statistics. The focused baseline pairing test is in
 `tests/test_baseline_model.py`.
+
+The current quantitative milestone is complete: rolling-history logistic and
+chronological Elo baselines are evaluated on the same holdout. The next milestone is
+season-level and parameter-sensitivity evaluation of Elo versus the rolling model,
+with leakage-safe chronological splits preserved. No database or raw data changes
+were required.

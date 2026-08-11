@@ -18,6 +18,11 @@
     "turnovers_rolling_10",
     "plusMinusPoints_rolling_10"
   ],
+  "elo": {
+    "initial_rating": 1500.0,
+    "k_factor": 20.0,
+    "home_advantage": 65.0
+  },
   "metrics": {
     "home_win_rate": {
       "accuracy": 0.56788219875106,
@@ -28,6 +33,11 @@
       "accuracy": 0.6297124354328888,
       "log_loss": 0.6432658139244889,
       "brier_score": 0.22575118341442182
+    },
+    "elo": {
+      "accuracy": 0.6518387171382315,
+      "log_loss": 0.624034869829727,
+      "brier_score": 0.21727355697098455
     }
   }
 }
