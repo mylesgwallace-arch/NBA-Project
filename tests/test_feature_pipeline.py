@@ -33,14 +33,21 @@ def load_expected_features():
     with sqlite3.connect(DB_PATH) as connection:
         source = pd.read_sql_query(
             """
-            SELECT gameId, gameDateTimeEst, teamId, opponentTeamId, home, win,
-                   teamScore, opponentScore, assists, steals, blocks,
-                   fieldGoalsPercentage, threePointersPercentage,
-                   freeThrowsPercentage, reboundsTotal, turnovers,
-                   plusMinusPoints
+            SELECT team_statistics.gameId, team_statistics.gameDateTimeEst,
+                   team_statistics.teamId, team_statistics.opponentTeamId,
+                   team_statistics.home, team_statistics.win,
+                   team_statistics.teamScore, team_statistics.opponentScore,
+                   team_statistics.assists, team_statistics.steals,
+                   team_statistics.blocks, team_statistics.fieldGoalsPercentage,
+                   team_statistics.threePointersPercentage,
+                   team_statistics.freeThrowsPercentage,
+                   team_statistics.reboundsTotal, team_statistics.turnovers,
+                   team_statistics.plusMinusPoints
             FROM team_statistics
-            WHERE gameType = 'Regular Season'
-            ORDER BY gameDateTimeEst
+            JOIN games ON games.gameId = team_statistics.gameId
+            WHERE COALESCE(team_statistics.gameType, games.gameType) =
+                  'Regular Season'
+            ORDER BY team_statistics.gameDateTimeEst
             """,
             connection,
         )
@@ -69,7 +76,7 @@ def test_generated_features_match_source_and_rolling_history():
     expected = load_expected_features()
     actual = pd.read_csv(FEATURES_PATH)
 
-    assert len(expected) == 129_836
+    assert len(expected) == 133_466
     assert len(actual) == len(expected)
     assert not actual.duplicated(["gameId", "teamId"]).any()
     assert not actual[STATS].isna().any().any()
@@ -77,6 +84,7 @@ def test_generated_features_match_source_and_rolling_history():
     for stat in PERCENTAGE_STATS:
         assert actual[stat].between(0, 1).all()
     np.testing.assert_array_equal(actual["season"].to_numpy(), expected["season"].to_numpy())
+    assert (actual["season"] == 2021).sum() == 2_445
 
     expected = expected.set_index(["gameId", "teamId"])
     actual = actual.set_index(["gameId", "teamId"])

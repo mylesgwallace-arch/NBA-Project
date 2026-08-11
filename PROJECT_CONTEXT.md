@@ -12,7 +12,7 @@
 
 The current objective is to build and validate the **historical NBA analytics foundation**.
 
-The immediate objective was to restore the raw CSV to SQLite to feature-engineering
+The immediate objective was to restore the raw CSV to SQLite feature-engineering
 pipeline after `src/build_features.py` loaded 0 team-game rows.
 
 That blocker is resolved. The database was rebuilt from the confirmed raw CSV files,
@@ -105,9 +105,10 @@ Always inspect the database before writing SQL against it.
 ```text
 games: 73,279
 team_statistics: 146,560
-team_statistics regular season: 130,014
+team_statistics regular season (native label): 130,014
+effective regular-season rows after Games.csv type fallback: 133,670
 team_statistics_extended: 79,724
-processed model-ready feature rows: 129,836
+processed model-ready feature rows: 133,466
 ```
 
 ---
@@ -190,11 +191,15 @@ Output:
 data/processed/game_features.csv
 ```
 
-The script executes successfully. The latest verified run reports:
+The script executes successfully. Because `TeamStatistics.csv` has null
+`gameType` values for part of late 2021 and 2022, the query uses
+`COALESCE(team_statistics.gameType, games.gameType)` after joining on `gameId`.
+`Games.csv` supplies the missing game classification without changing raw data.
+The latest verified run reports:
 
 ```text
-Loaded 130,014 team-game rows
-Saved 129,836 rows
+Loaded 133,670 team-game rows
+Saved 133,466 rows
 ```
 
 The output file is now populated, model-ready, and has the expected
@@ -242,8 +247,8 @@ plusMinusPoints_rolling_10
 ```
 
 These columns are the intended starting point for game-level feature engineering. The
-row count, duplicate handling, and rolling-window values have passed focused
-validation. The season definition still needs review before model training.
+row count, duplicate handling, rolling-window values, and season definition have
+passed focused validation.
 
 ---
 
@@ -253,14 +258,16 @@ validation. The season definition still needs review before model training.
 
 The SQLite `team_statistics` table existed with the expected schema but contained 0
 rows, even though `data/raw/TeamStatistics.csv` contained 146,560 rows. Reloading the
-database with `src/load_data.py` restored the table. The `gameType = 'Regular Season'`
-filter was valid and returned 130,014 rows after the reload.
+database with `src/load_data.py` restored the table. The native
+`gameType = 'Regular Season'` filter returned 130,014 rows after the reload, but the
+raw team-statistics file has 3,656 rows whose `gameType` is null. Joining those rows
+to `games` shows that the game table classifies the regular-season subset correctly.
 
 The feature pipeline now returns:
 
 ```text
-Loaded 130,014 team-game rows
-Saved 129,836 rows
+Loaded 133,670 team-game rows
+Saved 133,466 rows
 ```
 
 ## What is working
@@ -273,20 +280,19 @@ Saved 129,836 rows
   and rolling predictors.
 - Basic table validation via `src/check_database.py`.
 - Focused feature regression coverage in `tests/test_feature_pipeline.py`.
+- Game-type fallback through the `games` table for null team-statistics labels.
 
 ## What is not complete
 
 - The baseline model uses only team rolling history and does not yet include
   rest, roster, or player-availability features.
-- The feature pipeline now labels `season` by the calendar year in which the NBA
-  season starts: October-December use that year, and January-September use the
-  preceding year.
+- Player availability and roster features are not yet available in the model.
 
 ## Exact next step
 
-Investigate whether the Elo-style strength baseline remains robust across seasons
-and parameter choices, then compare it with the rolling logistic model by season
-before adding new feature families.
+Add a leakage-safe rest-interval feature from the verified game dates, retrain the
+baseline, and compare it against the current rolling-history and Elo baselines on
+the same chronological holdout before adding roster or player-availability data.
 
 The earlier investigation confirmed the following facts and should not be repeated as
 assumptions:
@@ -528,15 +534,16 @@ Website:                ⬜
 The earlier 0-row result was caused by an empty SQLite `team_statistics` table.
 The source `data/raw/TeamStatistics.csv` contained 146,560 rows, but the
 database table contained none, so the query in `src/build_features.py` had no
-rows to load. The `gameType = 'Regular Season'` predicate was not the cause:
-the reloaded table contains 130,014 matching rows.
+rows to load. After reload, the source also exposed a separate coverage issue:
+3,656 team-statistics rows have null `gameType` values. The feature query now
+falls back to `games.gameType` for those rows.
 
 The current database was reloaded from the confirmed raw CSV files. Running
 `src/build_features.py` from the project root now reports:
 
 ```text
-Loaded 130,014 team-game rows
-Saved 129,836 rows
+Loaded 133,670 team-game rows
+Saved 133,466 rows
 ```
 
 The feature script now applies the explicit model-ready policy. The generated
@@ -548,7 +555,7 @@ remains unchanged.
 `tests/test_feature_pipeline.py` independently reconstructs the regular-season
 source rows and all rolling columns, then verifies that:
 
-- the expected 129,836 rows are retained;
+- the expected 133,466 rows are retained;
 - output `(gameId, teamId)` keys match the source-derived rows;
 - duplicate keys, null current metrics, and null rolling values are absent;
 - percentage predictors are bounded fractions; and
@@ -556,9 +563,9 @@ source rows and all rolling columns, then verifies that:
   floating-point tolerance.
 
 The check passes when invoked directly with the project `.venv`. An independent
-validation also confirms 130,014 regular-season source rows, zero duplicate source
-keys, 129,836 output rows, zero duplicate output keys, complete current and rolling
-predictors, and zero invalid percentage values. The environment does not
+validation also confirms 133,670 effective regular-season source rows, zero duplicate
+source keys, 133,466 output rows, zero duplicate output keys, complete current and
+rolling predictors, and zero invalid percentage values. The environment does not
 currently include `pytest`, so the test was executed by importing and calling its
 test function directly; no dependency was added.
 
@@ -567,7 +574,8 @@ test function directly; no dependency was added.
 The feature pipeline is reproducible and its rolling-history behavior is verified.
 The generated dataset covers 1947-01-10 through 2026-04-12, uses seasons labeled
 by the calendar year in which they start, and contains 80 season labels from
-1946 through 2025.
+1946 through 2025. Season label 2021 now contains 2,445 team rows (1,230 games),
+rather than the previous two rows.
 
 ## Baseline prediction model
 
@@ -576,16 +584,16 @@ into one home-versus-away record. It uses only differences in the 11 rolling
 features, so current-game box-score metrics are excluded from prediction. The
 final 20% of games by date is held out chronologically.
 
-The reproducible run produced 64,855 complete games: 51,884 training games and
-12,971 test games, with the holdout beginning on 2014-11-29. Results are saved
+The reproducible run produced 66,658 complete games: 53,326 training games and
+13,332 test games, with the holdout beginning on 2015-03-28. Results are saved
 to `models/baseline_metrics.json`, and the fitted pipeline is saved to
 `models/baseline_logistic.pkl`.
 
 | Model | Accuracy | Log loss | Brier score |
 | --- | ---: | ---: | ---: |
-| Training-period home-win rate | 0.56788 | 0.69179 | 0.24914 |
-| Rolling-feature logistic model | 0.62971 | 0.64327 | 0.22575 |
-| Chronological Elo (K=20, home advantage=65) | 0.65184 | 0.62403 | 0.21727 |
+| Training-period home-win rate | 0.56481 | 0.69305 | 0.24977 |
+| Rolling-feature logistic model | 0.62729 | 0.64669 | 0.22710 |
+| Chronological Elo (K=20, home advantage=65) | 0.64971 | 0.62616 | 0.21812 |
 
 The models are validated first baselines, not evidence that the feature set is
 optimal. The Elo evaluator initializes teams at 1500, uses only ratings available
@@ -597,9 +605,17 @@ parameters recorded in `models/baseline_metrics.json`. The focused baseline test
 also verify that an Elo rating update from one completed game affects the next
 pregame probability without using the next game's result.
 
+The trainer now records Elo metrics for each holdout season, rolling-logistic
+metrics for the same seasons, and a four-point Elo sensitivity grid. On the 13,332-game holdout, the configured Elo (`K=20`, home advantage `65`)
+remains best in aggregate (log loss `0.62616`) versus the rolling logistic model
+(`0.64669`). The repaired 2021 comparison now contains 1,215 games and is
+interpretable as a seasonal result, subject to the source's remaining
+quality limitations. The tested Elo settings are recorded in
+`models/baseline_metrics.json`.
+
 ## Historical dataset validation
 
-The regular-season source contains 130,014 rows with dates from
+The effective regular-season source contains 133,670 rows with dates from
 1946-11-26 through 2026-04-12. Game/team keys are structurally consistent:
 there are no duplicate `(gameId, teamId)` keys and every regular-season game has
 exactly two team rows. `home` is binary (`0`, `1`) and `win` is binary (`0.0`,
@@ -607,8 +623,8 @@ exactly two team rows. `home` is binary (`0`, `1`) and `win` is binary (`0.0`,
 
 The live audit found three source rows with null required box-score metrics
 (two teams in game `26200259` and the three-point percentage for one team in
-game `28800195`). The generated CSV therefore contains 17 null metric cells;
-the current pipeline retains those source rows.
+game `28800195`). The generated CSV excludes rows with unusable current metrics or incomplete
+rolling history; it contains no null current or rolling predictors.
 
 The percentage fields are not consistently bounded fractions in the legacy
 portion of the source: 25 regular-season rows have out-of-range values (4 field
@@ -625,7 +641,7 @@ the raw database while preventing malformed values from entering model training.
 
 The season-label rule and model-ready policy are implemented in
 `src/build_features.py`, regenerated the feature CSV, and are covered by
-`tests/test_feature_pipeline.py`. The focused regression passes with 129,836
+`tests/test_feature_pipeline.py`. The focused regression passes with 133,466
 rows, zero duplicate keys, complete current and rolling predictors, bounded
 percentage values, and the expected rolling values. The output covers
 1947-01-10 through 2026-04-12.
@@ -640,7 +656,9 @@ not current game statistics. The focused baseline pairing test is in
 `tests/test_baseline_model.py`.
 
 The current quantitative milestone is complete: rolling-history logistic and
-chronological Elo baselines are evaluated on the same holdout. The next milestone is
-season-level and parameter-sensitivity evaluation of Elo versus the rolling model,
-with leakage-safe chronological splits preserved. No database or raw data changes
-were required.
+chronological Elo baselines are evaluated on the same holdout, including
+season-level comparison and Elo parameter sensitivity. The 2021 coverage gap
+was diagnosed and repaired in feature extraction by using the authoritative
+`games` classification for null team-statistics labels. The next milestone is
+adding and evaluating a leakage-safe rest-interval feature; chronological
+splits remain required. Raw CSV and database contents were not modified.

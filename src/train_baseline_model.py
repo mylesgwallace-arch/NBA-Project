@@ -17,6 +17,12 @@ TEST_FRACTION = 0.2
 ELO_INITIAL_RATING = 1500.0
 ELO_K_FACTOR = 20.0
 ELO_HOME_ADVANTAGE = 65.0
+ELO_PARAMETER_GRID = [
+    {"k_factor": 10.0, "home_advantage": 50.0},
+    {"k_factor": 20.0, "home_advantage": 65.0},
+    {"k_factor": 30.0, "home_advantage": 65.0},
+    {"k_factor": 40.0, "home_advantage": 100.0},
+]
 
 
 def build_game_dataset(features):
@@ -92,6 +98,94 @@ def evaluate_elo(
     return evaluate_predictions(pd.Series(test_targets), pd.Series(test_probabilities))
 
 
+def elo_test_predictions(
+    games,
+    split,
+    initial_rating=ELO_INITIAL_RATING,
+    k_factor=ELO_K_FACTOR,
+    home_advantage=ELO_HOME_ADVANTAGE,
+):
+    ratings = {}
+    predictions = []
+
+    for index, game in games.iterrows():
+        home_team = game["homeTeamId"]
+        away_team = game["awayTeamId"]
+        home_rating = ratings.get(home_team, initial_rating)
+        away_rating = ratings.get(away_team, initial_rating)
+        probability = elo_win_probability(home_rating, away_rating, home_advantage)
+
+        if index >= split:
+            predictions.append(
+                {
+                    "index": index,
+                    "probability": probability,
+                    "target": int(game["target"]),
+                    "season": int(game["season"]),
+                }
+            )
+
+        outcome = game["target"]
+        ratings[home_team] = home_rating + k_factor * (outcome - probability)
+        ratings[away_team] = away_rating + k_factor * ((1 - outcome) - (1 - probability))
+
+    return pd.DataFrame(predictions)
+
+
+def evaluate_elo_by_season(
+    games,
+    split,
+    initial_rating=ELO_INITIAL_RATING,
+    k_factor=ELO_K_FACTOR,
+    home_advantage=ELO_HOME_ADVANTAGE,
+):
+    predictions = elo_test_predictions(
+        games, split, initial_rating, k_factor, home_advantage
+    )
+    results = {}
+    for season, season_predictions in predictions.groupby("season", sort=True):
+        metrics = evaluate_predictions(
+            season_predictions["target"], season_predictions["probability"]
+        )
+        metrics["games"] = int(len(season_predictions))
+        results[str(season)] = metrics
+    return results
+
+
+def evaluate_elo_parameter_grid(games, split):
+    results = []
+    for parameters in ELO_PARAMETER_GRID:
+        predictions = elo_test_predictions(
+            games,
+            split,
+            k_factor=parameters["k_factor"],
+            home_advantage=parameters["home_advantage"],
+        )
+        metrics = evaluate_predictions(
+            predictions["target"], predictions["probability"]
+        )
+        results.append({**parameters, **metrics})
+    return results
+
+
+def evaluate_predictions_by_season(target, probabilities, seasons):
+    values = pd.DataFrame(
+        {
+            "target": target.to_numpy(),
+            "probability": probabilities.to_numpy(),
+            "season": seasons.to_numpy(),
+        }
+    )
+    results = {}
+    for season, season_values in values.groupby("season", sort=True):
+        metrics = evaluate_predictions(
+            season_values["target"], season_values["probability"]
+        )
+        metrics["games"] = int(len(season_values))
+        results[str(season)] = metrics
+    return results
+
+
 def evaluate_predictions(target, probabilities):
     return {
         "accuracy": float(accuracy_score(target, probabilities >= 0.5)),
@@ -103,6 +197,9 @@ def evaluate_predictions(target, probabilities):
 def main():
     features = pd.read_csv(FEATURES_PATH)
     games, predictor_columns = build_game_dataset(features)
+    games["season"] = pd.to_datetime(games["gameDateTimeEst"]).dt.year - (
+        pd.to_datetime(games["gameDateTimeEst"]).dt.month < 10
+    )
     split = int(len(games) * (1 - TEST_FRACTION))
     train = games.iloc[:split]
     test = games.iloc[split:]
@@ -127,6 +224,13 @@ def main():
         for name, probabilities in predictions.items()
     }
     metrics["elo"] = evaluate_elo(games, split)
+    elo_season_metrics = evaluate_elo_by_season(games, split)
+    elo_parameter_sensitivity = evaluate_elo_parameter_grid(games, split)
+    rolling_season_metrics = evaluate_predictions_by_season(
+        test["target"],
+        predictions["rolling_logistic"],
+        test["season"],
+    )
     metadata = {
         "feature_rows": len(features),
         "complete_games": len(games),
@@ -141,6 +245,9 @@ def main():
             "home_advantage": ELO_HOME_ADVANTAGE,
         },
         "metrics": metrics,
+        "elo_by_season": elo_season_metrics,
+        "rolling_logistic_by_season": rolling_season_metrics,
+        "elo_parameter_sensitivity": elo_parameter_sensitivity,
     }
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)

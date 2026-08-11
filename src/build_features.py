@@ -11,26 +11,27 @@ conn = sqlite3.connect(DB_PATH)
 
 df = pd.read_sql_query("""
     SELECT
-        gameId,
-        gameDateTimeEst,
-        teamId,
-        opponentTeamId,
-        home,
-        win,
-        teamScore,
-        opponentScore,
-        assists,
-        steals,
-        blocks,
-        fieldGoalsPercentage,
-        threePointersPercentage,
-        freeThrowsPercentage,
-        reboundsTotal,
-        turnovers,
-        plusMinusPoints
+        team_statistics.gameId,
+        team_statistics.gameDateTimeEst,
+        team_statistics.teamId,
+        team_statistics.opponentTeamId,
+        team_statistics.home,
+        team_statistics.win,
+        team_statistics.teamScore,
+        team_statistics.opponentScore,
+        team_statistics.assists,
+        team_statistics.steals,
+        team_statistics.blocks,
+        team_statistics.fieldGoalsPercentage,
+        team_statistics.threePointersPercentage,
+        team_statistics.freeThrowsPercentage,
+        team_statistics.reboundsTotal,
+        team_statistics.turnovers,
+        team_statistics.plusMinusPoints
     FROM team_statistics
-    WHERE gameType = 'Regular Season'
-    ORDER BY gameDateTimeEst
+    JOIN games ON games.gameId = team_statistics.gameId
+    WHERE COALESCE(team_statistics.gameType, games.gameType) = 'Regular Season'
+    ORDER BY team_statistics.gameDateTimeEst
 """, conn)
 
 conn.close()
