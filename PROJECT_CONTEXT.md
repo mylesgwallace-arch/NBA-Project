@@ -870,3 +870,28 @@ control MAE at every cutoff. The 2024 candidate MAE is `11.54684` versus
 `[-0.05375, -0.01189]`; the complete split report is persisted in
 `models/player_impact_metrics.json`. This remains an association diagnostic and
 does not justify causal roster projections.
+
+## Exact next milestone
+
+The next milestone is **prospective roster-change validation**, not a user-facing
+impact tool or simulation engine. It is currently blocked because the available
+`data/raw/player_trades_raw.csv` and `data/raw/draft_pick_trades_raw.csv` extracts
+contain names, non-ISO date strings, and no HTTP(S) source provenance. They must
+not be ingested through `src/roster_change_data.py` by inferring identifiers,
+timestamps, or URLs.
+
+Progress can resume when an independently sourced event file is available with
+the existing loader contract: unique `event_id`, timezone-aware or parseable
+`event_timestamp`, positive `team_id` and `person_id`, `change_type` of `add` or
+`remove`, a source description, and an HTTP(S) `source_url`. The validation
+milestone is then to join those events to pre/post team-game outcomes, preserve
+chronological cutoffs, compare against a no-change/control baseline, and report
+uncertainty before exposing any projection capability.
+
+Current validation evidence remains:
+
+* `python -m pytest tests -q`: 20 tests passed.
+* SQLite has seven populated tables, including 73,279 games and 146,560
+  `team_statistics` rows.
+* The player-impact result is an association diagnostic only; its prospective
+  causal validity is unestablished.
