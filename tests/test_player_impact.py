@@ -3,9 +3,11 @@ import pytest
 
 from src.player_impact import (
     _add_team_participation_controls,
+    _select_external_roster_change_appearances,
     estimate_player_impact,
     validate_player_impact,
 )
+from src.roster_change_data import validate_roster_change_events
 
 
 def test_player_impact_uses_minutes_weighted_prior_production():
@@ -148,3 +150,31 @@ def test_team_participation_controls_use_only_the_prior_team_game():
     assert result[result["gameId"] == 1][
         ["prior_active_players", "prior_rotation_minutes"]
     ].isna().all().all()
+
+
+def test_external_addition_links_only_to_first_later_appearance():
+    values = pd.DataFrame(
+        [
+            {"personId": 100, "teamId": 10, "gameId": 1, "gameDateTimeEst": "2024-10-01"},
+            {"personId": 100, "teamId": 10, "gameId": 2, "gameDateTimeEst": "2024-10-03"},
+            {"personId": 100, "teamId": 10, "gameId": 3, "gameDateTimeEst": "2024-10-05"},
+        ]
+    )
+    events = validate_roster_change_events(
+        pd.DataFrame(
+            [{
+                "event_id": "add-100",
+                "event_timestamp": "2024-10-02T12:00:00Z",
+                "team_id": 10,
+                "person_id": 100,
+                "change_type": "add",
+                "source": "independent source",
+                "source_url": "https://example.test/add-100",
+            }]
+        )
+    )
+
+    result = _select_external_roster_change_appearances(values, events)
+
+    assert result["external_event_id"].tolist() == ["add-100"]
+    assert result["gameId"].tolist() == [2]

@@ -27,6 +27,15 @@ leakage-safe rest-interval predictor, and player-level prior-production features
 The player-impact association benchmark has now been repeated across four
 season-based holdouts.
 
+The repository has no qualifying prospective roster, injury, transaction, or
+independently sourced post-change outcome data. The raw directory now includes
+`player_trades_raw.csv` and `draft_pick_trades_raw.csv`, but those extracts use
+player/team names, non-ISO date strings, and no HTTP(S) source provenance. They
+cannot be passed to the roster-event loader without unverified identity, date,
+and provenance inference. Existing historical box scores are sufficient for
+association diagnostics but not for validating a counterfactual addition/removal
+projection.
+
 ---
 
 # 2. Current Repository
@@ -143,6 +152,7 @@ Known relevant scripts include:
 src/check_database.py
 src/create_indexes.py
 src/build_features.py
+src/roster_change_data.py
 ```
 
 Before creating a new script:
@@ -403,6 +413,30 @@ under `roster_change_validation`. Rest intervals are computed from each
 team's complete game schedule, not only from games containing a roster-change
 event. Focused player-impact tests and the full test suite pass.
 
+The latest reproducibility check regenerated the impact report successfully.
+The full project suite completed with 20 passing tests, and the baseline report
+remains populated with 66,658 complete games and the unchanged chronological
+holdout metrics.
+
+The current continuation check reran `src/check_database.py`, `python -m pytest
+tests -q`, and `src/player_impact.py` using the project `.venv`. The database
+validator passed, the suite completed with 20 passing tests, and the impact
+report regenerated successfully. Its historical roster-transition benchmark
+remains unchanged: control MAE `12.84272` versus candidate MAE `12.86279`.
+The raw trade extracts are present but do not satisfy the external-event
+contract, so the benchmark cannot yet be run without introducing unverified
+identity mappings or source provenance.
+The latest continuation also confirmed the live SQLite table counts and
+schema, and the command-line impact run completed in approximately 34 seconds.
+
+The 2026-08-11 continuation inspection also verified the live SQLite schema and
+row counts: `games` 73,279; `team_statistics` 146,560;
+`team_statistics_extended` 79,724; and `player_statistics_extended` 838,803.
+`src/check_database.py`, the full test suite, and `src/player_impact.py` all
+completed successfully. No additional implementation is safe until qualifying
+external roster events are supplied; inferring them from the historical tables
+would not provide prospective or causal validation.
+
 ## Exact next step
 
 Keep the player-impact estimator gated and obtain prospective validation or a
@@ -411,6 +445,30 @@ addition/removal projections. The historical roster-change benchmark is now
 complete but fails to improve its pregame control and does not establish
 causal transfer to a new team context. Do not build the simulation or
 user-facing projection layer until that validation gap is resolved.
+
+The concrete next implementation step is now to obtain an independently sourced,
+timestamped roster-change outcome dataset that satisfies this contract, then run
+`src/player_impact.py --roster-events PATH` and inspect the resulting
+`event_source`, ignored-removal count, and chronological holdout metrics. The
+existing raw trade extracts may be retained as leads, but must not be converted
+into benchmark events unless their source URL, unambiguous event timestamps, and
+database-resolvable team/player identifiers are documented and validated. Do not
+substitute the existing box scores or schedule files for this source: they do
+not identify prospective roster decisions or provide a causal counterfactual.
+
+The ingestion contract is implemented in `src/roster_change_data.py`. It
+requires unique event identifiers, timestamped team/player IDs, an explicit
+`add` or `remove` event type, and source provenance with an HTTP(S) URL. The
+loader intentionally does not create or infer events, and no qualifying
+independent source dataset is present yet. The existing benchmark accepts
+validated events
+through `validate_player_impact(..., roster_events=events)` or the
+`src/player_impact.py --roster-events PATH` command. External `add` events are
+linked to the first later appearance for that player and team before the
+chronological benchmark runs; `remove` events are counted and explicitly
+reported as unsupported rather than being treated as additions. The benchmark
+has not been rerun with external events because no qualifying source dataset is
+present.
 
 The earlier investigation confirmed the following facts and should not be repeated as
 assumptions:
@@ -640,7 +698,7 @@ Feature script:         ✅ Loads regular-season rows and writes features
 Game feature CSV:       ✅ Populated and independently validated
 Prediction model:         ✅ Leakage-safe rolling-plus-rest logistic baseline rebuilt
 Model evaluation:         ✅ Chronological holdout with accuracy, log loss, and Brier score
-Player impact model:    ⚠️ Historical team-game cutoffs improve slightly, but roster-change validation does not; causal/prospective validation still required
+Player impact model:    ⚠️ Historical team-game cutoffs improve slightly, but roster-change validation does not; external prospective data ingestion is now ready, causal/prospective validation still required
 Simulation engine:      ⬜
 AI agent/tool layer:    ⬜
 Live data:              ⬜
@@ -683,9 +741,9 @@ source rows and all rolling columns, then verifies that:
 The check passes when invoked directly with the project `.venv`. An independent
 validation also confirms 133,670 effective regular-season source rows, zero duplicate
 source keys, 133,466 output rows, zero duplicate output keys, complete current and
-rolling predictors, and zero invalid percentage values. The environment does not
-currently include `pytest`, so the test was executed by importing and calling its
-test function directly; no dependency was added.
+rolling predictors, and zero invalid percentage values. The project `.venv`
+includes `pytest`; the full suite was run with `python -m pytest tests -q` and
+completed with 20 passing tests.
 
 ## Current status after feature validation
 

@@ -7,6 +7,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+if __package__:
+    from .roster_change_data import validate_roster_change_events
+else:
+    from roster_change_data import validate_roster_change_events
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "data" / "database" / "nba.db"
@@ -456,18 +461,57 @@ def _evaluate_later_team_game_splits(values, validation_start_seasons):
     }
 
 
-def _evaluate_roster_change_target(values, test_fraction):
+def _select_external_roster_change_appearances(values, roster_events):
+    """Link validated addition events to the first later player appearance."""
+    events = validate_roster_change_events(roster_events)
+    additions = events[events["change_type"] == "add"]
+    values = values.copy()
+    values["_appearance_timestamp"] = pd.to_datetime(
+        values["gameDateTimeEst"], utc=True
+    )
+    linked = []
+    for event in additions.itertuples(index=False):
+        candidates = values[
+            (values["personId"] == event.person_id)
+            & (values["teamId"] == event.team_id)
+            & (values["_appearance_timestamp"] > event.event_timestamp)
+        ].sort_values(["_appearance_timestamp", "gameId"])
+        if not candidates.empty:
+            first = candidates.iloc[[0]].copy()
+            first["external_event_id"] = event.event_id
+            linked.append(first)
+    if not linked:
+        return values.iloc[0:0].drop(columns="_appearance_timestamp")
+    return pd.concat(linked, ignore_index=True).drop(
+        columns="_appearance_timestamp"
+    )
+
+
+def _evaluate_roster_change_target(values, test_fraction, roster_events=None):
     """Evaluate the player signal on first appearances after a team change."""
     values = values.copy()
     values["gameDateTimeEst"] = pd.to_datetime(values["gameDateTimeEst"])
-    transitions = values[
-        values["prior_team_id"].notna()
-        & (values["prior_team_id"] != values["teamId"])
-    ].copy()
+    if roster_events is None:
+        transitions = values[
+            values["prior_team_id"].notna()
+            & (values["prior_team_id"] != values["teamId"])
+        ].copy()
+        event_source = "historical_team_id_transitions"
+        ignored_removals = 0
+    else:
+        transitions = _select_external_roster_change_appearances(
+            values, roster_events
+        )
+        event_source = "external_timestamped_additions"
+        ignored_removals = int(
+            (validate_roster_change_events(roster_events)["change_type"] == "remove").sum()
+        )
     if transitions.empty:
         return {
             "status": "insufficient_roster_change_data",
             "transition_player_games": 0,
+            "event_source": event_source,
+            "ignored_removal_events": ignored_removals,
         }
     transition_events = (
         transitions.groupby(["gameId", "teamId"], as_index=False)
@@ -524,6 +568,8 @@ def _evaluate_roster_change_target(values, test_fraction):
             "status": "insufficient_roster_change_data",
             "transition_player_games": int(len(transitions)),
             "evaluated_transition_events": int(len(transition_events)),
+            "event_source": event_source,
+            "ignored_removal_events": ignored_removals,
         }
     split_games = max(
         1,
@@ -561,6 +607,8 @@ def _evaluate_roster_change_target(values, test_fraction):
         "candidate_predictors": candidate_columns,
         "transition_player_games": int(len(transitions)),
         "evaluated_transition_events": int(len(transition_events)),
+        "event_source": event_source,
+        "ignored_removal_events": ignored_removals,
         "training_events": int(len(training)),
         "holdout_events": int(len(holdout)),
         "holdout_games": int(holdout["gameId"].nunique()),
@@ -586,7 +634,7 @@ def _evaluate_roster_change_target(values, test_fraction):
 
 
 def validate_player_impact(
-    player_games, team_games, window=WINDOW, test_fraction=0.2
+    player_games, team_games, window=WINDOW, test_fraction=0.2, roster_events=None
 ):
     """Validate a possession-normalized leave-one-player-out target.
 
@@ -825,7 +873,7 @@ def validate_player_impact(
             values, (2022, 2023, 2024, 2025)
         ),
         "roster_change_validation": _evaluate_roster_change_target(
-            values, test_fraction
+            values, test_fraction, roster_events
         ),
         "note": (
             "The leave-one-out target removes current player points and "
@@ -871,9 +919,28 @@ def load_validation_data(connection):
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--roster-events",
+        type=Path,
+        help="CSV of independently sourced timestamped roster changes",
+    )
+    arguments = parser.parse_args()
     with sqlite3.connect(DB_PATH) as connection:
         player_games, team_games = load_validation_data(connection)
-    metrics = validate_player_impact(player_games, team_games)
+    roster_events = None
+    if arguments.roster_events is not None:
+        if __package__:
+            from .roster_change_data import load_roster_change_events
+        else:
+            from roster_change_data import load_roster_change_events
+
+        roster_events = load_roster_change_events(arguments.roster_events)
+    metrics = validate_player_impact(
+        player_games, team_games, roster_events=roster_events
+    )
     METRICS_PATH.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(metrics, indent=2))
     print(f"Saved to: {METRICS_PATH}")
