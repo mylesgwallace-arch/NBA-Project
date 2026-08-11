@@ -15,7 +15,9 @@ The current objective is to build and validate the **historical NBA analytics fo
 The immediate objective was to restore the raw CSV to SQLite feature-engineering
 pipeline after `src/build_features.py` loaded 0 team-game rows, establish a
 leakage-safe baseline model, and begin evaluating historical player availability
-signals.
+signals. That quantitative foundation is complete; the current objective is to
+validate a simple player/team impact model before exposing it as a user-facing
+capability.
 
 That blocker is resolved. The database was rebuilt from the confirmed raw CSV files,
 and the feature-building pipeline now produces nonzero output. Generated features and
@@ -301,6 +303,9 @@ Saved 133,466 rows
 
 - The player features are historical production/participation proxies, not injury
   forecasts. A trustworthy historical pregame inactive list is not available.
+- The player-impact target is an association diagnostic, not causal evidence, and
+  remains gated from user-facing projection until its validation limitations are
+  addressed.
 
 ## Latest player-history evaluation
 
@@ -314,12 +319,37 @@ and Brier score `0.22665`; configured chronological Elo remains better at log lo
 `0.62616` and Brier score `0.21812`. The saved `baseline_logistic.pkl` now contains
 the improved player-history model and its predictor list.
 
+## Player impact prototype
+
+`src/player_impact.py` provides an assumption-labeled addition/removal estimate
+based on a player's prior ten regular-season appearances. It uses minutes-weighted
+player net rating and prior average minutes, assumes those values transfer to a new
+team context, and compares them with a configurable baseline net rating. That
+baseline is a reference value of `0.0`, not a claim about replacement level.
+
+The validation target is now a possession-normalized leave-one-player-out scoring
+target: current team net rating minus team scoring net rating after removing the
+player's current points and possessions. Prior ten-game player production predicts
+this target for 663,251 player-games with MAE `36.60191`, compared with a
+fixed-zero MAE of `43.40858`, correlation `0.43903`, and an improvement over zero.
+The chronological 20% holdout calibrates the signal only on earlier games and
+scores 136,402 player-games from 6,703 games: calibrated MAE `30.86037` versus
+fixed-zero MAE `36.06197`. It improves the fixed-zero baseline in aggregate and
+in every available holdout season (2019-2025); the smallest seasonal sample is
+19 player-games in 2021. This is a better-defined incremental target, but it
+remains an association diagnostic rather than causal evidence. A reproducible
+game-cluster bootstrap gives a 95% interval of `[-5.48228, -4.91403]` for
+calibrated MAE minus fixed-zero MAE, so the aggregate holdout improvement is
+separated from zero under this resampling procedure. This does not establish
+causality or quantify uncertainty for a future roster change. The
+addition/removal estimator is still not promoted as a reliable projection.
+
 ## Exact next step
 
-Begin player/team impact modeling using the saved leakage-safe baseline and validated
-historical player features. The first implementation should estimate a simple,
-explicitly assumption-labeled team net-rating change for a player addition/removal
-and define a historical validation target before exposing it as a user-facing tool.
+Define and evaluate an independent, pregame impact target or stronger controls
+that do not derive the outcome by removing the same player's current scoring.
+Keep the current result as an uncertainty-labeled association diagnostic and do
+not expose the addition/removal estimate as a causal projection.
 
 The earlier investigation confirmed the following facts and should not be repeated as
 assumptions:
@@ -549,7 +579,7 @@ Feature script:         ✅ Loads regular-season rows and writes features
 Game feature CSV:       ✅ Populated and independently validated
 Prediction model:         ✅ Leakage-safe rolling-plus-rest logistic baseline rebuilt
 Model evaluation:         ✅ Chronological holdout with accuracy, log loss, and Brier score
-Player impact model:    ⬜
+Player impact model:    ⚠️ Holdout association diagnostic beats zero with clustered interval; causal validation still required
 Simulation engine:      ⬜
 AI agent/tool layer:    ⬜
 Live data:              ⬜
@@ -699,3 +729,17 @@ reconstruction; chronological splits remain required. Player-level prior-product
 summaries were evaluated without current-game or future information and improved the
 logistic holdout metrics, so they are now in the saved model artifact. Raw CSV and
 database contents were not modified.
+
+## Player impact status
+
+The first impact prototype is implemented in `src/player_impact.py` and covered by
+`tests/test_player_impact.py`. The validator now calibrates the prior-production
+signal using only games before the final 20% chronological holdout and reports
+aggregate and season-level MAE against fixed zero. Focused regression tests pass,
+the full historical validation completes, and
+`models/player_impact_metrics.json` records a holdout improvement in aggregate and
+every available season. The estimate remains descriptive rather than causal and
+must not yet be wired into a user-facing tool. The holdout's 95% game-cluster
+bootstrap interval for model-minus-baseline MAE is `[-5.48228, -4.91403]`;
+this quantifies resampling uncertainty for the benchmark comparison only, not
+uncertainty around a hypothetical player addition or removal.
