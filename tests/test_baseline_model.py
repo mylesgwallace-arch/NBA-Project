@@ -73,6 +73,43 @@ def test_game_dataset_includes_pregame_rest_difference_when_available():
     assert games.loc[0, "rest_days"] == 1
 
 
+def test_game_dataset_includes_pregame_player_availability_differences():
+    features = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-03",
+                "teamId": 10,
+                "home": 1,
+                "win": 1,
+                "teamScore_rolling_10": 100,
+                "active_players_rolling_10": 8,
+                "active_players_last_game": 7,
+            },
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-03",
+                "teamId": 20,
+                "home": 0,
+                "win": 0,
+                "teamScore_rolling_10": 95,
+                "active_players_rolling_10": 9,
+                "active_players_last_game": 9,
+            },
+        ]
+    )
+
+    games, predictors = build_game_dataset(features)
+
+    assert predictors == [
+        "teamScore_rolling_10",
+        "active_players_rolling_10",
+        "active_players_last_game",
+    ]
+    assert games.loc[0, "active_players_rolling_10"] == -1
+    assert games.loc[0, "active_players_last_game"] == -2
+
+
 def test_elo_updates_after_completed_games_only():
     games = pd.DataFrame(
         [

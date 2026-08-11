@@ -27,11 +27,20 @@ ELO_PARAMETER_GRID = [
 
 def build_game_dataset(features):
     rolling_columns = [
-        column for column in features.columns if column.endswith("_rolling_10")
+        column
+        for column in features.columns
+        if column.endswith("_rolling_10")
+        and column != "active_players_rolling_10"
     ]
     predictor_columns = rolling_columns.copy()
     optional_team_predictors = [
-        column for column in ["rest_days"] if column in features.columns
+        column
+        for column in [
+            "active_players_rolling_10",
+            "active_players_last_game",
+            "rest_days",
+        ]
+        if column in features.columns
     ]
     predictor_columns.extend(optional_team_predictors)
     home = features[features["home"] == 1][

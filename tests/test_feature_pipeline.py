@@ -4,10 +4,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.build_features import add_pregame_player_features
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "data" / "database" / "nba.db"
 FEATURES_PATH = ROOT / "data" / "processed" / "game_features.csv"
+PLAYER_FEATURE = "active_players_rolling_10"
+LAST_GAME_PLAYER_FEATURE = "active_players_last_game"
 
 STATS = [
     "teamScore",
@@ -111,3 +115,24 @@ def test_generated_features_match_source_and_rolling_history():
         rtol=1e-12,
         atol=1e-12,
     )
+
+
+def test_pregame_player_feature_uses_only_previous_team_games():
+    team_games = pd.DataFrame(
+        [
+            {"gameId": 1, "teamId": 10, "gameDateTimeEst": "2020-01-01"},
+            {"gameId": 2, "teamId": 10, "gameDateTimeEst": "2020-01-02"},
+        ]
+    )
+    activity = pd.DataFrame(
+        [
+            {"gameId": 1, "teamId": 10, "personId": 100},
+            {"gameId": 1, "teamId": 10, "personId": 101},
+            {"gameId": 2, "teamId": 10, "personId": 102},
+        ]
+    )
+
+    result = add_pregame_player_features(team_games, activity)
+
+    assert result[PLAYER_FEATURE].tolist() == [0, 2]
+    assert result[LAST_GAME_PLAYER_FEATURE].tolist() == [0, 2]
