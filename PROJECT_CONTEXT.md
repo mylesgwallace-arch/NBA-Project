@@ -14,10 +14,9 @@ The current objective is to build and validate the **historical NBA analytics fo
 
 The immediate objective was to restore the raw CSV to SQLite feature-engineering
 pipeline after `src/build_features.py` loaded 0 team-game rows, establish a
-leakage-safe baseline model, and begin evaluating historical player availability
-signals. That quantitative foundation is complete; the current objective is to
-validate a simple player/team impact model before exposing it as a user-facing
-capability.
+leakage-safe baseline model, and evaluate historical player availability signals.
+That quantitative foundation is complete; the current objective is to validate a
+simple player/team impact model before exposing it as a user-facing capability.
 
 That blocker is resolved. The database was rebuilt from the confirmed raw CSV files,
 and the feature-building pipeline now produces nonzero output. Generated features and
@@ -25,6 +24,8 @@ the historical dataset have been independently validated and covered by focused
 regression checks. The baseline prediction model has also been rebuilt and evaluated
 with a chronological holdout, including an Elo-style strength comparison, a
 leakage-safe rest-interval predictor, and player-level prior-production features.
+The player-impact association benchmark has now been repeated across four
+season-based holdouts.
 
 ---
 
@@ -303,9 +304,9 @@ Saved 133,466 rows
 
 - The player features are historical production/participation proxies, not injury
   forecasts. A trustworthy historical pregame inactive list is not available.
-- The player-impact target is an association diagnostic, not causal evidence, and
-  remains gated from user-facing projection until its validation limitations are
-  addressed.
+- The player-impact targets are association diagnostics, not causal evidence, and
+  remain gated from user-facing projection until stronger controls and independent
+  prospective validation are available.
 
 ## Latest player-history evaluation
 
@@ -327,6 +328,18 @@ player net rating and prior average minutes, assumes those values transfer to a 
 team context, and compares them with a configurable baseline net rating. That
 baseline is a reference value of `0.0`, not a claim about replacement level.
 
+The validator also evaluates an independent pregame target: observed current team
+net rating, predicted first from prior team/opponent form and prior-game team
+participation, then with the prior player-production signal added. The controls
+include prior active-player count and prior total rotation minutes. This target is
+not constructed by removing the player's current points or possessions. On the
+chronological holdout, the pregame-control model scored MAE `11.79552` across
+6,697 games and 136,276 player-games; adding the player signal scored `11.79408`.
+A game-cluster bootstrap 95% interval for candidate-minus-control MAE was
+`[-0.00200, -0.00098]`. The improvement is statistically separated from zero
+under this benchmark, but is small and remains an association result rather than
+causal evidence.
+
 The validation target is now a possession-normalized leave-one-player-out scoring
 target: current team net rating minus team scoring net rating after removing the
 player's current points and possessions. Prior ten-game player production predicts
@@ -344,12 +357,60 @@ separated from zero under this resampling procedure. This does not establish
 causality or quantify uncertainty for a future roster change. The
 addition/removal estimator is still not promoted as a reliable projection.
 
+The independent pregame target has now been stress-tested across 10%, 20%, and
+30% chronological holdouts. The player signal improves the pregame control MAE
+slightly in each window: `12.22946` vs `12.23062`, `11.79408` vs `11.79552`,
+and `11.48681` vs `11.48806`, respectively. Usage-stratified results are not
+uniform: the low- and middle-prior-minute strata are slightly worse than the
+control in all three windows, while the high-minute stratum is better in all
+three. These results support robustness as an association diagnostic, but the
+small, usage-dependent effect is not evidence for a causal player projection.
+The persisted report is `models/player_impact_metrics.json`, and focused tests
+cover the window and usage-stratum result shape.
+
+The validator also evaluates the signal once per team-game, rather than weighting
+team outcomes by the number of player rows. The control uses only prior team,
+opponent, participation, possession, rest, and home-court predictors; the candidate
+adds the mean prior player signal. Four untouched season-based holdouts all improve
+the control:
+
+```text
+validation start | holdout team-games | control MAE | candidate MAE | 95% MAE difference
+2022             | 9,694              | 11.30074    | 11.27184      | [-0.04380, -0.01434]
+2023             | 7,234              | 11.58557    | 11.56045      | [-0.04391, -0.00723]
+2024             | 4,906              | 11.58057    | 11.54684      | [-0.05375, -0.01189]
+2025             | 2,460              | 11.70645    | 11.66426      | [-0.06866, -0.01418]
+```
+
+The results are persisted in `models/player_impact_metrics.json` under
+`later_team_game_validation_by_season`. They remain association diagnostics, not
+evidence that the player-impact estimator is causal.
+
+The validator now also evaluates observed roster-change events using the
+independent current-team-net-rating target. It selects first player appearances
+after a historical team change, aggregates multiple changes in the same
+team-game, and compares the player signal with the same pregame team,
+opponent, participation, possession, rest, and home controls. The benchmark
+contains 5,280 transition player-games and 3,506 evaluable transition events;
+the chronological holdout contains 697 events across 614 games. The control
+MAE is `12.84272` and the candidate MAE is `12.86279`. The clustered bootstrap
+95% interval for candidate-minus-control MAE is `[-0.03576, 0.07496]`, which
+includes zero. The roster-change benchmark therefore does not support adding
+the player signal to a roster-change projection.
+
+The roster-change result is persisted in `models/player_impact_metrics.json`
+under `roster_change_validation`. Rest intervals are computed from each
+team's complete game schedule, not only from games containing a roster-change
+event. Focused player-impact tests and the full test suite pass.
+
 ## Exact next step
 
-Define and evaluate an independent, pregame impact target or stronger controls
-that do not derive the outcome by removing the same player's current scoring.
-Keep the current result as an uncertainty-labeled association diagnostic and do
-not expose the addition/removal estimate as a causal projection.
+Keep the player-impact estimator gated and obtain prospective validation or a
+stronger independently sourced roster-change outcome before exposing
+addition/removal projections. The historical roster-change benchmark is now
+complete but fails to improve its pregame control and does not establish
+causal transfer to a new team context. Do not build the simulation or
+user-facing projection layer until that validation gap is resolved.
 
 The earlier investigation confirmed the following facts and should not be repeated as
 assumptions:
@@ -579,7 +640,7 @@ Feature script:         ✅ Loads regular-season rows and writes features
 Game feature CSV:       ✅ Populated and independently validated
 Prediction model:         ✅ Leakage-safe rolling-plus-rest logistic baseline rebuilt
 Model evaluation:         ✅ Chronological holdout with accuracy, log loss, and Brier score
-Player impact model:    ⚠️ Holdout association diagnostic beats zero with clustered interval; causal validation still required
+Player impact model:    ⚠️ Historical team-game cutoffs improve slightly, but roster-change validation does not; causal/prospective validation still required
 Simulation engine:      ⬜
 AI agent/tool layer:    ⬜
 Live data:              ⬜
@@ -743,3 +804,11 @@ must not yet be wired into a user-facing tool. The holdout's 95% game-cluster
 bootstrap interval for model-minus-baseline MAE is `[-5.48228, -4.91403]`;
 this quantifies resampling uncertainty for the benchmark comparison only, not
 uncertainty around a hypothetical player addition or removal.
+The newer team-game evaluation uses one row per team-game and repeats the
+untouched holdout from validation starts 2022, 2023, 2024, and 2025. It adds
+prior team possessions, rest, and home-court controls; the candidate improves
+control MAE at every cutoff. The 2024 candidate MAE is `11.54684` versus
+`11.58057` for controls, with a clustered 95% difference interval of
+`[-0.05375, -0.01189]`; the complete split report is persisted in
+`models/player_impact_metrics.json`. This remains an association diagnostic and
+does not justify causal roster projections.
