@@ -1,0 +1,33 @@
+{
+  "feature_rows": 129836,
+  "complete_games": 64855,
+  "train_games": 51884,
+  "test_games": 12971,
+  "test_fraction": 0.2,
+  "split_start": "2014-11-29 19:00:00",
+  "predictors": [
+    "teamScore_rolling_10",
+    "opponentScore_rolling_10",
+    "assists_rolling_10",
+    "steals_rolling_10",
+    "blocks_rolling_10",
+    "fieldGoalsPercentage_rolling_10",
+    "threePointersPercentage_rolling_10",
+    "freeThrowsPercentage_rolling_10",
+    "reboundsTotal_rolling_10",
+    "turnovers_rolling_10",
+    "plusMinusPoints_rolling_10"
+  ],
+  "metrics": {
+    "home_win_rate": {
+      "accuracy": 0.56788219875106,
+      "log_loss": 0.6917868195548537,
+      "brier_score": 0.24914381750561362
+    },
+    "rolling_logistic": {
+      "accuracy": 0.6297124354328888,
+      "log_loss": 0.6432658139244889,
+      "brier_score": 0.22575118341442182
+    }
+  }
+}
