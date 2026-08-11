@@ -13,13 +13,14 @@
 The current objective is to build and validate the **historical NBA analytics foundation**.
 
 The immediate objective was to restore the raw CSV to SQLite feature-engineering
-pipeline after `src/build_features.py` loaded 0 team-game rows.
+pipeline after `src/build_features.py` loaded 0 team-game rows and establish a
+leakage-safe baseline model.
 
 That blocker is resolved. The database was rebuilt from the confirmed raw CSV files,
 and the feature-building pipeline now produces nonzero output. Generated features and the historical dataset have now been independently validated
 and covered by focused regression checks. The baseline prediction model has also been
 rebuilt and evaluated with a chronological holdout, including an Elo-style strength
-comparison.
+comparison and a leakage-safe rest-interval predictor.
 
 ---
 
@@ -276,6 +277,7 @@ Saved 133,466 rows
 - SQLite tables and expected lowercase/underscore table names.
 - Regular-season team-game extraction in `src/build_features.py`.
 - Chronological rolling features using only previous games.
+- Leakage-safe `rest_days` intervals from each team's previous game date.
 - Model-ready output at `data/processed/game_features.csv` with complete current
   and rolling predictors.
 - Basic table validation via `src/check_database.py`.
@@ -284,15 +286,15 @@ Saved 133,466 rows
 
 ## What is not complete
 
-- The baseline model uses only team rolling history and does not yet include
-  rest, roster, or player-availability features.
+- The baseline model includes team rolling history and rest differential, but does
+  not yet include roster or player-availability features.
 - Player availability and roster features are not yet available in the model.
 
 ## Exact next step
 
-Add a leakage-safe rest-interval feature from the verified game dates, retrain the
-baseline, and compare it against the current rolling-history and Elo baselines on
-the same chronological holdout before adding roster or player-availability data.
+Inspect the available player and roster history, define a leakage-safe availability
+feature that is present before each game, and evaluate it against the current
+rolling-plus-rest logistic model and Elo baseline on the same chronological holdout.
 
 The earlier investigation confirmed the following facts and should not be repeated as
 assumptions:
@@ -304,8 +306,8 @@ assumptions:
 5. That the table contains game-level team statistics.
 6. That the current SQL filter does not exclude all rows after reload.
 7. That the expected feature columns exist in the raw team-statistics data.
-8. That `build_features.py` can use `gameDateTimeEst` directly; no join with `games`
-	 is required for the current feature set.
+8. That `build_features.py` uses `gameDateTimeEst` for chronological features and
+   joins `games` only to recover missing game-type labels.
 
 ---
 
@@ -520,7 +522,7 @@ Database tables:        ✅ Confirmed
 Database validation:    ✅ Existing utility
 Feature script:         ✅ Loads regular-season rows and writes features
 Game feature CSV:       ✅ Populated and independently validated
-Prediction model:         ✅ Leakage-safe rolling logistic baseline rebuilt
+Prediction model:         ✅ Leakage-safe rolling-plus-rest logistic baseline rebuilt
 Model evaluation:         ✅ Chronological holdout with accuracy, log loss, and Brier score
 Player impact model:    ⬜
 Simulation engine:      ⬜
@@ -580,9 +582,9 @@ rather than the previous two rows.
 ## Baseline prediction model
 
 `src/train_baseline_model.py` converts the two team rows for each complete game
-into one home-versus-away record. It uses only differences in the 11 rolling
-features, so current-game box-score metrics are excluded from prediction. The
-final 20% of games by date is held out chronologically.
+into one home-versus-away record. It uses differences in the 11 rolling features
+and pregame `rest_days`, so current-game box-score metrics are excluded from
+prediction. The final 20% of games by date is held out chronologically.
 
 The reproducible run produced 66,658 complete games: 53,326 training games and
 13,332 test games, with the holdout beginning on 2015-03-28. Results are saved
@@ -592,7 +594,7 @@ to `models/baseline_metrics.json`, and the fitted pipeline is saved to
 | Model | Accuracy | Log loss | Brier score |
 | --- | ---: | ---: | ---: |
 | Training-period home-win rate | 0.56481 | 0.69305 | 0.24977 |
-| Rolling-feature logistic model | 0.62729 | 0.64669 | 0.22710 |
+| Rolling-plus-rest logistic model | 0.62736 | 0.64667 | 0.22709 |
 | Chronological Elo (K=20, home advantage=65) | 0.64971 | 0.62616 | 0.21812 |
 
 The models are validated first baselines, not evidence that the feature set is
@@ -606,9 +608,11 @@ also verify that an Elo rating update from one completed game affects the next
 pregame probability without using the next game's result.
 
 The trainer now records Elo metrics for each holdout season, rolling-logistic
-metrics for the same seasons, and a four-point Elo sensitivity grid. On the 13,332-game holdout, the configured Elo (`K=20`, home advantage `65`)
-remains best in aggregate (log loss `0.62616`) versus the rolling logistic model
-(`0.64669`). The repaired 2021 comparison now contains 1,215 games and is
+metrics for the same seasons, and a four-point Elo sensitivity grid. On the
+13,332-game holdout, the configured Elo (`K=20`, home advantage `65`) remains
+best in aggregate (log loss `0.62616`) versus the rolling-plus-rest logistic model
+(`0.64667`). Rest produces a small improvement over the prior rolling-only result
+(`0.64669` log loss, `0.22710` Brier), but does not displace Elo. The repaired 2021 comparison now contains 1,215 games and is
 interpretable as a seasonal result, subject to the source's remaining
 quality limitations. The tested Elo settings are recorded in
 `models/baseline_metrics.json`.
@@ -651,14 +655,16 @@ safe by replacing its non-ASCII status marker with ASCII output. It validates al
 seven database tables successfully.
 
 The baseline model and evaluation are now implemented in
-`src/train_baseline_model.py`. Model training uses only pregame rolling features,
-not current game statistics. The focused baseline pairing test is in
+`src/train_baseline_model.py`. Model training uses only pregame rolling and rest
+features, not current game statistics. The focused baseline pairing test is in
 `tests/test_baseline_model.py`.
 
-The current quantitative milestone is complete: rolling-history logistic and
-chronological Elo baselines are evaluated on the same holdout, including
+The current quantitative milestone is complete: rolling-history-plus-rest logistic
+and chronological Elo baselines are evaluated on the same holdout, including
 season-level comparison and Elo parameter sensitivity. The 2021 coverage gap
 was diagnosed and repaired in feature extraction by using the authoritative
-`games` classification for null team-statistics labels. The next milestone is
-adding and evaluating a leakage-safe rest-interval feature; chronological
-splits remain required. Raw CSV and database contents were not modified.
+`games` classification for null team-statistics labels. Rest intervals are calculated
+from each team's prior game timestamp and verified against an independent source
+reconstruction; chronological splits remain required. The next milestone is
+leakage-safe roster/player-availability feature extraction and evaluation. Raw CSV
+and database contents were not modified.

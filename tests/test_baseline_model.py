@@ -43,6 +43,36 @@ def test_game_dataset_pairs_home_and_away_rows_without_current_game_metrics():
     assert "teamScore" not in predictors
 
 
+def test_game_dataset_includes_pregame_rest_difference_when_available():
+    features = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-03",
+                "teamId": 10,
+                "home": 1,
+                "win": 1,
+                "teamScore_rolling_10": 100,
+                "rest_days": 2,
+            },
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-03",
+                "teamId": 20,
+                "home": 0,
+                "win": 0,
+                "teamScore_rolling_10": 95,
+                "rest_days": 1,
+            },
+        ]
+    )
+
+    games, predictors = build_game_dataset(features)
+
+    assert predictors == ["teamScore_rolling_10", "rest_days"]
+    assert games.loc[0, "rest_days"] == 1
+
+
 def test_elo_updates_after_completed_games_only():
     games = pd.DataFrame(
         [

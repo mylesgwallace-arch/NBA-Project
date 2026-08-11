@@ -58,6 +58,12 @@ def load_expected_features():
     )
     source = source.drop_duplicates(["gameId", "teamId"])
     source = source.sort_values("gameDateTimeEst")
+    source["rest_days"] = (
+        source.groupby("teamId")["gameDateTimeEst"]
+        .diff()
+        .dt.total_seconds()
+        .div(86400)
+    )
 
     for stat in PERCENTAGE_STATS:
         source.loc[~source[stat].between(0, 1), stat] = np.nan
@@ -81,6 +87,7 @@ def test_generated_features_match_source_and_rolling_history():
     assert not actual.duplicated(["gameId", "teamId"]).any()
     assert not actual[STATS].isna().any().any()
     assert not actual[[f"{stat}_rolling_10" for stat in STATS]].isna().any().any()
+    assert not actual["rest_days"].isna().any()
     for stat in PERCENTAGE_STATS:
         assert actual[stat].between(0, 1).all()
     np.testing.assert_array_equal(actual["season"].to_numpy(), expected["season"].to_numpy())
@@ -98,3 +105,9 @@ def test_generated_features_match_source_and_rolling_history():
             rtol=1e-12,
             atol=1e-12,
         )
+    np.testing.assert_allclose(
+        actual["rest_days"].to_numpy(),
+        expected["rest_days"].to_numpy(),
+        rtol=1e-12,
+        atol=1e-12,
+    )

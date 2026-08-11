@@ -50,6 +50,14 @@ df = df.drop_duplicates(subset=["gameId", "teamId"])
 # Sort chronologically
 df = df.sort_values("gameDateTimeEst")
 
+# Days since each team's previous game, available before the current game.
+df["rest_days"] = (
+    df.groupby("teamId")["gameDateTimeEst"]
+    .diff()
+    .dt.total_seconds()
+    .div(86400)
+)
+
 # Create rolling averages using ONLY previous games
 stats = [
     "teamScore",

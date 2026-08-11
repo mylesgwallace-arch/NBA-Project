@@ -29,27 +29,32 @@ def build_game_dataset(features):
     rolling_columns = [
         column for column in features.columns if column.endswith("_rolling_10")
     ]
+    predictor_columns = rolling_columns.copy()
+    optional_team_predictors = [
+        column for column in ["rest_days"] if column in features.columns
+    ]
+    predictor_columns.extend(optional_team_predictors)
     home = features[features["home"] == 1][
-        ["gameId", "gameDateTimeEst", "teamId", "win", *rolling_columns]
+        ["gameId", "gameDateTimeEst", "teamId", "win", *predictor_columns]
     ].rename(
         columns={
             "teamId": "homeTeamId",
             "win": "target",
-            **{column: f"{column}_home" for column in rolling_columns},
+            **{column: f"{column}_home" for column in predictor_columns},
         }
     )
     away = features[features["home"] == 0][
-        ["gameId", "teamId", *rolling_columns]
+        ["gameId", "teamId", *predictor_columns]
     ].rename(
         columns={
             "teamId": "awayTeamId",
-            **{column: f"{column}_away" for column in rolling_columns},
+            **{column: f"{column}_away" for column in predictor_columns},
         }
     )
 
     games = home.merge(away, on="gameId", how="inner", validate="one_to_one")
     games["target"] = games["target"].astype(int)
-    for column in rolling_columns:
+    for column in predictor_columns:
         games[column] = games[f"{column}_home"] - games[f"{column}_away"]
     games = games[
         [
@@ -58,10 +63,13 @@ def build_game_dataset(features):
             "homeTeamId",
             "awayTeamId",
             "target",
-            *rolling_columns,
+            *predictor_columns,
         ]
     ]
-    return games.sort_values(["gameDateTimeEst", "gameId"]).reset_index(drop=True), rolling_columns
+    return (
+        games.sort_values(["gameDateTimeEst", "gameId"]).reset_index(drop=True),
+        predictor_columns,
+    )
 
 
 def elo_win_probability(home_rating, away_rating, home_advantage=ELO_HOME_ADVANTAGE):
