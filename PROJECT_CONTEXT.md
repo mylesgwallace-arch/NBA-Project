@@ -136,6 +136,143 @@ The current milestone is therefore the operational baseline prediction interface
 logical step after this is to compare a small number of candidate model variants against
 this baseline and keep the best-performing configuration exposed through the same CLI path.
 
+Implementation update (2026-08-11): the candidate-model comparison already computed by
+`src/train_baseline_model.py` (`home_win_rate`, `rolling_logistic`, `player_history_logistic`,
+`elo`) previously was not connected to the CLI, which always served the pickled logistic
+model even though the chronological holdout showed the Elo rating system was best on every
+metric (accuracy 0.64971 vs 0.62691, log loss 0.62616 vs 0.64584, Brier score 0.21812 vs
+0.22660 for the next-best `player_history_logistic` model). This gap is now closed:
+
+- `src/train_baseline_model.py` adds `select_recommended_model(metrics)`, which chooses the
+  candidate with the lowest holdout log loss (log loss is used because it rewards calibrated
+  probabilities, matching the project's probabilistic-evaluation guidance). The trivial
+  `home_win_rate` reference baseline is excluded from selection. The result is persisted as
+  `recommended_model` (currently `"elo"`) and `recommendation_metric` (`"log_loss"`) in
+  `models/baseline_metrics.json`.
+- `src/main.py` now reads `recommended_model` from `models/baseline_metrics.json` and
+  dispatches to the appropriate prediction path: an Elo path (`predict_matchup_elo`,
+  `compute_elo_ratings_as_of`) when Elo is recommended, or the existing logistic path
+  (`predict_matchup_logistic`) otherwise. The Elo path recomputes ratings by replaying only
+  the games strictly before the requested `--game-date` cutoff (or all available games if no
+  cutoff is given), so historical predictions remain leakage-safe -- no game on or after the
+  cutoff contributes to the rating used for that prediction. If the metrics file is missing,
+  the CLI falls back to the logistic model so it still works before retraining.
+- The CLI output's `"model"` field now reports which model actually produced the prediction
+  (`"elo"` at present) instead of a hard-coded label, and omits `feature_snapshot_date` (a
+  logistic-model-specific diagnostic) when the Elo path is used.
+- Fixed an import so `src/main.py` works both as `python -m src.main` / under pytest (package
+  import) and as a direct script `python src/main.py` (sibling-module import fallback).
+
+Validated current behavior (2026-08-11):
+- `./.venv/Scripts/python -m src.train_baseline_model` reruns successfully; unchanged holdout
+  metrics; new line `Recommended model (lowest holdout log loss): elo`.
+- `./.venv/Scripts/python -m pytest tests -q` → `30 passed` (24 previously existing plus 6 new
+  tests covering `select_recommended_model`, `compute_elo_ratings_as_of` cutoff behavior, the
+  metrics-file fallback, and the end-to-end Elo dispatch in `predict_matchup`).
+- `./.venv/Scripts/python src/main.py --home-team-id 1610612744 --away-team-id 1610612743
+  --game-date 2026-04-12` returns `"model": "elo"` with a real probability.
+- Confirmed leakage-safe recomputation: the same matchup queried with `--game-date 2020-01-01`
+  vs `--game-date 2026-04-12` vs no date returns different probabilities, showing ratings are
+  rebuilt only from games before each cutoff rather than reusing a single fixed rating.
+- Confirmed error handling: an unknown/never-seen `teamId` raises a clear `ValueError`
+  (`"No completed games found for teamId=...; cannot compute an Elo rating."`) instead of
+  silently defaulting.
+- `src/check_database.py` still passes for all seven confirmed tables.
+
+What now works: the CLI prediction interface automatically serves the empirically
+best-performing, holdout-validated model rather than a fixed logistic pickle, while
+remaining backward compatible (falls back to logistic if metrics are unavailable) and
+leakage-safe (ratings recomputed from only pregame history).
+
+Remaining issue / next step: Elo currently has no team/player-level explanatory features
+(it only encodes a single strength number), so it cannot yet support player-impact or
+trade-simulation questions -- those still require the logistic/player-history feature path
+or a future hybrid model. The next concrete milestone is to evaluate whether blending Elo
+rating (or Elo-derived features) into the logistic/player-history feature set improves on
+Elo alone under the same chronological holdout, since Elo's rating-only approach is simple
+but currently ignores the rolling box-score and player-availability predictors already
+built in `src/build_features.py`. Until a blended model is validated to beat plain Elo, keep
+Elo as the recommended/served model and keep player-impact projections gated as association
+diagnostics, per the existing roster-change validation notes above.
+
+## Engineering cleanup pass (2026-08-11)
+
+A full repository audit was performed and its findings were used as the source
+of truth for a follow-up engineering cleanup pass. No modeling methodology or
+reported metrics were changed in this pass; the Elo holdout metrics were
+re-verified identical before and after (accuracy 0.64971, log loss 0.62616,
+Brier score 0.21812).
+
+What changed:
+
+- Added `requirements.txt`, pinned to the versions already validated in the
+  project `.venv` (pandas, numpy, scikit-learn, requests, beautifulsoup4,
+  pytest). Verified with `pip install -r requirements.txt` that no
+  incompatible resolution occurs.
+- Added `pyproject.toml` with `[tool.pytest.ini_options] pythonpath = ["."]`
+  so a bare `pytest -q` invocation works from a clean checkout, not only
+  `python -m pytest`. Verified both invocation styles pass all 30 tests.
+- Fixed `src/create_indexes.py`, which referenced stale table names
+  (`TeamStatistics`, `PlayerStatistics`, `PlayerStatisticsExtended`,
+  `TeamStatisticsExtended`, and a nonexistent `PlayByPlay` table) left over
+  from before the table-naming issue documented in section 6 was fixed
+  elsewhere. It silently skipped indexing the large tables as a result. The
+  script now uses the confirmed lowercase/underscore table names and no
+  longer references `PlayByPlay`. Verified live: it now creates 16 indexes,
+  including on `player_statistics`, `player_statistics_extended`, and
+  `team_statistics_extended`, which previously had zero indexes.
+- Standardized `check_database.py`, `create_database.py`, `load_data.py`, and
+  `create_indexes.py` on the same `ROOT = Path(__file__).resolve().parents[1]`
+  pattern already used by `build_features.py`/`main.py`/`player_impact.py`, so
+  these scripts resolve `data/database/nba.db` correctly regardless of the
+  working directory they are invoked from. Verified each script from both the
+  project root and `src/` as the working directory.
+- Git hygiene: removed tracked `__pycache__`/`.pyc` files from version
+  control. Made the `models/` tracking policy explicit in `.gitignore`
+  (`models/*` with `!models/baseline_logistic.pkl` and
+  `!models/baseline_metrics.json` as documented exceptions); other generated
+  files under `models/` (e.g. `player_impact_metrics.json`) remain untracked
+  and regenerable. Committed the previously pending, already-validated
+  Elo-dispatch CLI work (`src/main.py`, `select_recommended_model` in
+  `src/train_baseline_model.py`, and their tests) that was sitting unstaged in
+  the working tree.
+- Corrected the `gameType` null-count wording in this file (sections 7 and 9):
+  the raw `team_statistics` table has 7,590 null `gameType` rows, of which the
+  `COALESCE(team_statistics.gameType, games.gameType)` fallback resolves 3,656
+  to `'Regular Season'` (the remainder resolve to Preseason, Playoffs, Play-in
+  Tournament, or NBA Cup). The previous wording described only the resolved
+  subset as if it were the full null count.
+- Removed dead/confusing code in `src/player_impact.py`'s
+  `validate_player_impact`: a `player_signal` value was computed from
+  `prior_weighted_net_rating` and then immediately overwritten by a different,
+  actually-used formula a few lines later; `prior_weighted_net_rating` and
+  `prior_player_team_net_rating` were otherwise used only as extra `dropna`
+  filter columns. Empirically verified (by comparing row counts and row
+  indexes with and without these columns in the filter) that removing them
+  does not change which rows are evaluated: 663,251 evaluated player-games
+  before and after. Regenerated `models/player_impact_metrics.json` and
+  confirmed it is byte-for-byte identical to the pre-cleanup output.
+- Expanded `readme.md` with setup instructions, a data-provenance note
+  (raw-CSV provenance is not currently documented in this repository --
+  flagged explicitly as a known gap rather than invented), database build
+  steps, feature/model build steps, CLI usage, and test invocation. Verified
+  the documented `pytest -q` and `python src/main.py --home-team-id ...`
+  commands both run successfully as written.
+
+Validated after cleanup: `pytest -q` (bare invocation) and
+`python -m pytest -q` both pass all 30 tests; `check_database.py` confirms all
+seven tables; `create_indexes.py` creates all 16 intended indexes;
+`train_baseline_model.py` reproduces the unchanged Elo/logistic holdout
+metrics; `player_impact.py` reproduces byte-identical output; `main.py`
+returns a valid prediction and the same clear `ValueError` for an unknown
+team.
+
+Exact next step: with the reproducibility and engineering issues resolved,
+the next analytical milestone remains the one already identified above --
+evaluate whether blending Elo rating (or Elo-derived features) into the
+logistic/player-history feature set improves on Elo alone under the same
+chronological holdout. That work has not been started in this pass.
+
 ---
 
 # 2. Current Repository
@@ -383,8 +520,11 @@ The SQLite `team_statistics` table existed with the expected schema but containe
 rows, even though `data/raw/TeamStatistics.csv` contained 146,560 rows. Reloading the
 database with `src/load_data.py` restored the table. The native
 `gameType = 'Regular Season'` filter returned 130,014 rows after the reload, but the
-raw team-statistics file has 3,656 rows whose `gameType` is null. Joining those rows
-to `games` shows that the game table classifies the regular-season subset correctly.
+raw team-statistics file has 7,590 rows whose `gameType` is null; joining those rows
+to `games` and applying `COALESCE(team_statistics.gameType, games.gameType)` resolves
+3,656 of them to `'Regular Season'` (the remainder resolve to Preseason, Playoffs,
+Play-in Tournament, or NBA Cup). Joining those rows to `games` shows that the game
+table classifies the regular-season subset correctly.
 
 The feature pipeline now returns:
 
@@ -818,8 +958,10 @@ The earlier 0-row result was caused by an empty SQLite `team_statistics` table.
 The source `data/raw/TeamStatistics.csv` contained 146,560 rows, but the
 database table contained none, so the query in `src/build_features.py` had no
 rows to load. After reload, the source also exposed a separate coverage issue:
-3,656 team-statistics rows have null `gameType` values. The feature query now
-falls back to `games.gameType` for those rows.
+7,590 team-statistics rows have null `gameType` values; the `COALESCE` fallback
+to `games.gameType` resolves 3,656 of those rows to `'Regular Season'` (the
+remaining null rows resolve to Preseason, Playoffs, Play-in Tournament, or NBA
+Cup and are correctly excluded from the regular-season feature set).
 
 The current database was reloaded from the confirmed raw CSV files. Running
 `src/build_features.py` from the project root now reports:

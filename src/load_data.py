@@ -2,8 +2,9 @@ import sqlite3
 from pathlib import Path
 import pandas as pd
 
-RAW = Path("data/raw")
-DB = Path("data/database/nba.db")
+ROOT = Path(__file__).resolve().parents[1]
+RAW = ROOT / "data" / "raw"
+DB = ROOT / "data" / "database" / "nba.db"
 
 
 def load_csv(conn, filename, table_name):

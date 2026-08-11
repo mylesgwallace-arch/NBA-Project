@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+# Ensures `pytest tests -q` works from a clean checkout without requiring
+# `python -m pytest`. `python -m pytest` implicitly puts the current working
+# directory on sys.path, but a bare `pytest` invocation does not, which broke
+# the `from src.xxx import ...` imports used throughout tests/.
+pythonpath = ["."]
+testpaths = ["tests"]

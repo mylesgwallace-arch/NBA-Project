@@ -665,29 +665,12 @@ def validate_player_impact(
     players = players.sort_values(["personId", "gameDateTimeEst", "gameId"])
     teams = teams.sort_values(["teamId", "gameDateTimeEst", "gameId"])
     players = _add_team_participation_controls(players)
-    players["weighted_net_rating"] = players["minutes"] * players["netRating"]
-    player_context = teams[["gameId", "teamId", "netRating"]].rename(
-        columns={"netRating": "player_team_net_rating"}
-    )
-    players = players.merge(
-        player_context, on=["gameId", "teamId"], how="left", validate="many_to_one"
-    )
     player_groups = players.groupby("personId", sort=False)
     players["prior_team_id"] = player_groups["teamId"].transform(
         lambda values: values.shift(1)
     )
     players["prior_minutes"] = player_groups["minutes"].transform(
         lambda values: values.shift(1).rolling(window, min_periods=window).sum()
-    )
-    players["prior_weighted_net_rating"] = player_groups[
-        "weighted_net_rating"
-    ].transform(
-        lambda values: values.shift(1).rolling(window, min_periods=window).sum()
-    )
-    players["prior_player_team_net_rating"] = player_groups[
-        "player_team_net_rating"
-    ].transform(
-        lambda values: values.shift(1).rolling(window, min_periods=window).mean()
     )
     team_groups = teams.groupby("teamId", sort=False)
     teams["prior_team_net_rating"] = team_groups["netRating"].transform(
@@ -734,14 +717,7 @@ def validate_player_impact(
         current_team, on=["gameId", "teamId"], how="inner", validate="many_to_one"
     )
     values = values.dropna(
-        subset=[
-            "prior_minutes", "prior_weighted_net_rating",
-            "prior_team_possessions", "prior_player_team_net_rating",
-        ]
-    )
-    values["player_signal"] = (
-        values["prior_weighted_net_rating"] / values["prior_minutes"]
-        * (values["prior_minutes"] / window) / 48.0
+        subset=["prior_minutes", "prior_team_possessions"]
     )
     player_groups = players.groupby("personId", sort=False)
     values["prior_points"] = player_groups["points"].transform(

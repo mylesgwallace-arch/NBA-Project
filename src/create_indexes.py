@@ -1,38 +1,40 @@
 import sqlite3
+from pathlib import Path
 
-DB_PATH = "data/database/nba.db"
+# The database uses lowercase/underscore table names (e.g. `team_statistics`,
+# not `TeamStatistics`) -- see PROJECT_CONTEXT.md section 6. Always inspect
+# the live schema before adding new index targets here.
+ROOT = Path(__file__).resolve().parents[1]
+DB_PATH = ROOT / "data" / "database" / "nba.db"
 
 conn = sqlite3.connect(DB_PATH)
 
 indexes = [
     # Games
-    ("idx_games_date", "Games", "gameDate"),
-    ("idx_games_home", "Games", "hometeamId"),
-    ("idx_games_away", "Games", "awayteamId"),
-    ("idx_games_type", "Games", "gameType"),
+    ("idx_games_game_id", "games", "gameId"),
+    ("idx_games_date", "games", "gameDate"),
+    ("idx_games_home", "games", "hometeamId"),
+    ("idx_games_away", "games", "awayteamId"),
+    ("idx_games_type", "games", "gameType"),
 
     # Team statistics
-    ("idx_teamstats_game", "TeamStatistics", "gameId"),
-    ("idx_teamstats_team", "TeamStatistics", "teamId"),
-    ("idx_teamstats_date", "TeamStatistics", "gameDate"),
+    ("idx_team_statistics_game_id", "team_statistics", "gameId"),
+    ("idx_team_statistics_team", "team_statistics", "teamId"),
+    ("idx_team_statistics_date", "team_statistics", "gameDate"),
 
     # Player statistics
-    ("idx_playerstats_game", "PlayerStatistics", "gameId"),
-    ("idx_playerstats_player", "PlayerStatistics", "personId"),
-    ("idx_playerstats_team", "PlayerStatistics", "playerteamId"),
+    ("idx_player_statistics_game", "player_statistics", "gameId"),
+    ("idx_player_statistics_person", "player_statistics", "personId"),
+    ("idx_player_statistics_team", "player_statistics", "playerteamId"),
 
     # Extended player statistics
-    ("idx_playerext_game", "PlayerStatisticsExtended", "gameId"),
-    ("idx_playerext_player", "PlayerStatisticsExtended", "personId"),
-    ("idx_playerext_team", "PlayerStatisticsExtended", "playerteamId"),
+    ("idx_player_statistics_extended_game", "player_statistics_extended", "gameId"),
+    ("idx_player_statistics_extended_person", "player_statistics_extended", "personId"),
+    ("idx_player_statistics_extended_team", "player_statistics_extended", "playerteamId"),
 
     # Extended team statistics
-    ("idx_teamext_game", "TeamStatisticsExtended", "gameId"),
-    ("idx_teamext_team", "TeamStatisticsExtended", "teamId"),
-
-    # Play-by-play
-    ("idx_pbp_game", "PlayByPlay", "gameId"),
-    ("idx_pbp_player", "PlayByPlay", "personId"),
+    ("idx_team_statistics_extended_game", "team_statistics_extended", "gameId"),
+    ("idx_team_statistics_extended_team", "team_statistics_extended", "teamId"),
 ]
 
 for name, table, column in indexes:

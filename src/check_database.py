@@ -1,6 +1,8 @@
 import sqlite3
+from pathlib import Path
 
-db_path = "data/database/nba.db"
+ROOT = Path(__file__).resolve().parents[1]
+db_path = ROOT / "data" / "database" / "nba.db"
 
 conn = sqlite3.connect(db_path)
 

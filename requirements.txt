@@ -1,0 +1,10 @@
+# Direct dependencies used by src/ and tests/, pinned to the versions
+# verified working in the project .venv. Install with:
+#   pip install -r requirements.txt
+
+pandas==2.3.3
+numpy==2.5.2
+scikit-learn==1.9.0
+requests==2.34.2
+beautifulsoup4==4.15.0
+pytest==9.1.1
