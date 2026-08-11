@@ -100,6 +100,42 @@ cases and decide whether the 3,605-event external source is large enough to repl
 curated sample for a descriptive benchmark; if it remains unstable, keep the roster signal
 labeled as an association diagnostic and avoid promoting it to a causal impact claim.
 
+Current highest-priority next milestone (2026-08-11): operationalize and validate the
+core game-prediction baseline as the repository's next analytic milestone. The project
+already contains the historical game-prediction pipeline in `src/train_baseline_model.py`,
+and it has now been executed and validated against the current feature set.
+
+Validated baseline result:
+- `src/train_baseline_model.py` runs successfully and saves `models/baseline_logistic.pkl`
+  and `models/baseline_metrics.json`
+- chronological holdout: 53,326 train / 13,332 test games
+- home-win-rate baseline accuracy = 0.5648, log_loss = 0.6930, brier_score = 0.2498
+- rolling logistic model accuracy = 0.6267, log_loss = 0.6463, brier_score = 0.2269
+- player-history logistic model accuracy = 0.6269, log_loss = 0.6458, brier_score = 0.2266
+- Elo baseline accuracy = 0.6497, log_loss = 0.6262, brier_score = 0.2181
+- `tests/test_baseline_model.py` passes: 5 passed
+
+This establishes a measured predictive baseline and confirms the next safe milestone is
+not a website or live-data layer. The next step is to use this validated baseline as the
+reference for improved model comparisons and a simple prediction interface, while keeping
+roster-impact findings clearly labeled as association diagnostics rather than causal claims.
+
+Implementation update (2026-08-11): the validated baseline has been exposed as a
+minimal prediction interface through `src/main.py`. The CLI loads the saved logistic
+model, pulls the latest available pregame team features at or before an optional cutoff
+date, computes home-minus-away feature deltas for the model's predictor set, and returns
+home/away win probabilities and a prediction label.
+
+Validated current behavior:
+- `./.venv/Scripts/python -m pytest tests/test_baseline_model.py tests/test_predict_game.py -q`
+  → `7 passed in 3.19s`
+- `./.venv/Scripts/python src/main.py --home-team-id 1610612744 --away-team-id 1610612743 --game-date 2026-04-12`
+  runs successfully and returns a probability output for a real matchup
+
+The current milestone is therefore the operational baseline prediction interface. The next
+logical step after this is to compare a small number of candidate model variants against
+this baseline and keep the best-performing configuration exposed through the same CLI path.
+
 ---
 
 # 2. Current Repository
