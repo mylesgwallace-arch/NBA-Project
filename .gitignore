@@ -1,2 +1,15 @@
-# Ignore entire NBA data directory
-data/*
+# NBA data
+data/
+
+# Python virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Generated model files
+models/
+
+# Environment variables
+.env
