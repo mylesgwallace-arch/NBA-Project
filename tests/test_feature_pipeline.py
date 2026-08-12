@@ -4,7 +4,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.build_features import add_opponent_adjusted_win_rate, add_pregame_player_features
+from src.build_features import (
+    add_opponent_adjusted_margin,
+    add_opponent_adjusted_win_rate,
+    add_pregame_player_features,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -223,4 +227,29 @@ def test_opponent_adjusted_win_rate_uses_opponent_pregame_form():
 
     assert np.allclose(
         merged["opponent_adjusted_win_rate_rolling_10"].to_numpy(), [0.2, -0.2]
+    )
+
+
+def test_opponent_adjusted_margin_uses_opponent_pregame_margin():
+    games = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "teamId": 10,
+                "opponentTeamId": 20,
+                "plusMinusPoints_rolling_10": 6.0,
+            },
+            {
+                "gameId": 1,
+                "teamId": 20,
+                "opponentTeamId": 10,
+                "plusMinusPoints_rolling_10": 2.0,
+            },
+        ]
+    )
+
+    merged = add_opponent_adjusted_margin(games)
+
+    assert np.allclose(
+        merged["opponent_adjusted_plusMinusPoints_rolling_10"].to_numpy(), [4.0, -4.0]
     )

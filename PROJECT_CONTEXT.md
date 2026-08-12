@@ -475,9 +475,46 @@ Validation: `./.venv/Scripts/python -m pytest tests/test_baseline_model.py -q` -
 and `./.venv/Scripts/python src/train_baseline_model.py` completes successfully while writing
 `models/baseline_metrics.json` with the persisted feature report.
 
+Candidate review (2026-08-12): evaluated a leakage-safe opponent-adjusted form signal,
+`opponent_adjusted_win_rate_rolling_10`, and tested it against the same chronological holdout.
+It worsened the retained boosted-hybrid log loss from `0.62554` to `0.62583` and did not
+outperform the current feature set, so it was rejected and the feature file was rebuilt back to
+the validated rolling-win-rate baseline. The feature remains a documented candidate for future
+exploration only if it can beat the frozen model under the same ablation and season-stability
+checks.
+
 Exact next step: use this feature-importance report to decide whether a new leakage-safe
 team/player feature is worth the expected ablation and season-stability review before expanding
 the retained model further.
+
+Implementation update (2026-08-12): evaluated a second explanatory candidate,
+`opponent_adjusted_plusMinusPoints_rolling_10`, using the same chronological holdout and
+season-level stability checks. The feature degraded the retained boosted-hybrid log loss from
+`0.62554` to `0.62561` and did not improve on the frozen baseline, so it was rejected and the
+validated `win_rate_rolling_10`/`plusMinusPoints_rolling_10` feature set was restored.
+
+What now works: the retained boosted-hybrid feature set remains the proven, frozen baseline,
+the model-importance report is persisted, and the repository has no evidence-backed candidate
+feature currently worth adding under the same validation gate. The next milestone is therefore
+a documentation/explainability handoff around the retained baseline rather than another model
+feature expansion.
+
+Implementation update (2026-08-12): exposed the saved model explanation in the prediction CLI
+via a `--explain` flag in `src/main.py`. The command now returns the current top-ranked
+importance weights from `models/baseline_metrics.json` alongside the probability output, so the
+retained boosted hybrid is no longer a black box when users ask for a prediction.
+
+What now works: `predict_matchup()` includes a `feature_importance` field when the metrics file is
+available, the CLI surfaces the same top features under `--explain`, and the new regression test
+confirms the importance loader reads the persisted ranking correctly.
+
+Validation: `./.venv/Scripts/python -m pytest tests/test_predict_game.py tests/test_baseline_model.py -q`
+-> `25 passed`; `./.venv/Scripts/python src/main.py --home-team-id 1610612744 --away-team-id 1610612743 --game-date 2026-04-12 --explain`
+returns a real probability plus the top five driving features.
+
+Exact next step: keep the validated boosted-hybrid baseline frozen and use the explanation output
+as the repository's audited model-summary layer until a new feature candidate demonstrates a clear,
+reproducible holdout improvement under the same ablation and season-stability gate.
 
 A full repository audit was performed and its findings were used as the source
 of truth for a follow-up engineering cleanup pass. No modeling methodology or

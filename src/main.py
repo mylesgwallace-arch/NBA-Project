@@ -202,6 +202,24 @@ def predict_matchup_elo(
     return home_probability, None
 
 
+def load_feature_importance(metrics_path=METRICS_PATH, top_n=5):
+    if not metrics_path.exists():
+        return []
+    metadata = json.loads(metrics_path.read_text(encoding="utf-8"))
+    feature_importance = metadata.get("feature_importance", {})
+    features = feature_importance.get("features", [])
+    if not features:
+        return []
+    return [
+        {
+            "rank": int(item.get("rank", rank + 1)),
+            "feature": item.get("feature"),
+            "importance": float(item.get("importance", 0.0)),
+        }
+        for rank, item in enumerate(features[:top_n])
+    ]
+
+
 def predict_matchup(
     home_team_id,
     away_team_id,
@@ -240,6 +258,9 @@ def predict_matchup(
     }
     if feature_snapshot_date is not None:
         result["feature_snapshot_date"] = feature_snapshot_date
+    feature_importance = load_feature_importance(metrics_path)
+    if feature_importance:
+        result["feature_importance"] = feature_importance
     return result
 
 
@@ -261,6 +282,11 @@ def parse_args(argv=None):
         type=str,
         help="Optional cutoff date in YYYY-MM-DD format. Uses the latest available pregame features on or before this date.",
     )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Include the top model features and their normalized importance weights in the JSON output.",
+    )
     return parser.parse_args(argv)
 
 
@@ -274,6 +300,11 @@ def main(argv=None):
         )
     except ValueError as exc:
         raise SystemExit(str(exc))
+    if args.explain:
+        result["explanation"] = {
+            "model": result.get("model"),
+            "top_features": load_feature_importance(METRICS_PATH, top_n=5),
+        }
     print(json.dumps(result, indent=2))
     return 0
 

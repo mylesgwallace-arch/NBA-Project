@@ -227,6 +227,26 @@ def add_opponent_adjusted_win_rate(team_games):
     return merged
 
 
+def add_opponent_adjusted_margin(team_games):
+    """Compute a candidate pregame margin differential versus the opponent."""
+    opponent_margins = team_games[["gameId", "teamId", "plusMinusPoints_rolling_10"]].rename(
+        columns={
+            "teamId": "opponentTeamId",
+            "plusMinusPoints_rolling_10": "opponent_plusMinusPoints_rolling_10",
+        }
+    )
+    merged = team_games.merge(
+        opponent_margins,
+        on=["gameId", "opponentTeamId"],
+        how="left",
+        validate="many_to_one",
+    )
+    merged["opponent_adjusted_plusMinusPoints_rolling_10"] = (
+        merged["plusMinusPoints_rolling_10"] - merged["opponent_plusMinusPoints_rolling_10"]
+    )
+    return merged
+
+
 def build_features():
     with sqlite3.connect(DB_PATH) as connection:
         df = load_team_games(connection)

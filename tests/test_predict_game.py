@@ -5,6 +5,7 @@ import pandas as pd
 from src.main import (
     build_prediction_row,
     compute_elo_ratings_as_of,
+    load_feature_importance,
     load_recommended_model_name,
     lookup_last_team_row,
     predict_matchup,
@@ -129,6 +130,31 @@ def test_load_recommended_model_name_falls_back_when_metrics_file_missing(tmp_pa
     missing_path = tmp_path / "does_not_exist.json"
 
     assert load_recommended_model_name(missing_path) == "boosted_hybrid"
+
+
+def test_load_feature_importance_reads_top_features_from_metrics(tmp_path):
+    metrics_path = tmp_path / "baseline_metrics.json"
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "feature_importance": {
+                    "features": [
+                        {"rank": 1, "feature": "elo_delta", "importance": 0.7},
+                        {"rank": 2, "feature": "win_rate_rolling_10", "importance": 0.2},
+                        {"rank": 3, "feature": "rest_days", "importance": 0.1},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    features = load_feature_importance(metrics_path, top_n=2)
+
+    assert len(features) == 2
+    assert features[0]["feature"] == "elo_delta"
+    assert features[1]["feature"] == "win_rate_rolling_10"
+    assert features[0]["importance"] == 0.7
 
 
 def test_predict_matchup_uses_elo_when_recommended(tmp_path):
