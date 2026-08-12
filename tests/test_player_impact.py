@@ -5,6 +5,7 @@ from src.player_impact import (
     _add_team_participation_controls,
     _select_external_roster_change_appearances,
     estimate_player_impact,
+    main,
     validate_player_impact,
 )
 from src.roster_change_data import validate_roster_change_events
@@ -113,6 +114,41 @@ def test_validation_target_uses_only_prior_team_games():
         assert not split["control_has_player_signal"]
     roster_changes = result["roster_change_validation"]
     assert roster_changes["status"] == "insufficient_roster_change_data"
+
+
+def test_main_validate_roster_events_mode_prints_summary(tmp_path, capsys):
+    events = pd.DataFrame(
+        [
+            {
+                "event_id": "add-1",
+                "event_timestamp": "2024-10-01T15:00:00-04:00",
+                "team_id": 10,
+                "person_id": 100,
+                "change_type": "add",
+                "source": "independent source",
+                "source_url": "https://example.test/add-1",
+            },
+            {
+                "event_id": "remove-1",
+                "event_timestamp": "2024-10-02T15:00:00-04:00",
+                "team_id": 20,
+                "person_id": 200,
+                "change_type": "remove",
+                "source": "independent source",
+                "source_url": "https://example.test/remove-1",
+            },
+        ]
+    )
+    path = tmp_path / "roster_changes.csv"
+    events.to_csv(path, index=False)
+
+    exit_code = main(["--validate-roster-events", str(path)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert '"event_count": 2' in captured.out
+    assert '"add_count": 1' in captured.out
+    assert '"remove_count": 1' in captured.out
 
 
 def test_team_participation_controls_use_only_the_prior_team_game():

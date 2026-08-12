@@ -1,5 +1,6 @@
 """Validation and ingestion contract for independently sourced roster changes."""
 
+import json
 import re
 from pathlib import Path
 
@@ -403,10 +404,30 @@ def load_roster_change_events(path):
     return validate_roster_change_events(pd.read_csv(path))
 
 
-if __name__ == "__main__":
+def summarize_roster_change_events(events):
+    """Return a concise validation summary for an already-normalized roster-change dataset."""
+    frame = validate_roster_change_events(events)
+    summary = {
+        "event_count": int(len(frame)),
+        "add_count": int((frame["change_type"] == "add").sum()),
+        "remove_count": int((frame["change_type"] == "remove").sum()),
+        "team_count": int(frame["team_id"].nunique()),
+        "person_count": int(frame["person_id"].nunique()),
+        "first_event_timestamp": frame["event_timestamp"].min().isoformat(),
+        "last_event_timestamp": frame["event_timestamp"].max().isoformat(),
+    }
+    return summary
+
+
+def main(argv=None):
     import argparse
 
-    parser = argparse.ArgumentParser(description="Fetch and normalize Basketball-Reference roster transactions.")
+    parser = argparse.ArgumentParser(description="Roster-change data validation and Basketball-Reference fetch utilities.")
+    parser.add_argument(
+        "--validate",
+        type=Path,
+        help="Validate a CSV of timestamped roster-change events and print a summary JSON.",
+    )
     parser.add_argument(
         "--seasons",
         nargs="+",
@@ -426,7 +447,13 @@ if __name__ == "__main__":
         default=ROOT / "data" / "processed" / "bbr_roster_changes_unresolved_2022_2025.csv",
         help="Where to write unresolved transaction rows that could not be mapped to repo IDs.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    if args.validate is not None:
+        events = load_roster_change_events(args.validate)
+        summary = summarize_roster_change_events(events)
+        print(json.dumps(summary, indent=2))
+        return 0
 
     events, unresolved = fetch_basketball_reference_roster_changes(seasons=tuple(args.seasons))
     args.output_events.parent.mkdir(parents=True, exist_ok=True)
@@ -439,3 +466,8 @@ if __name__ == "__main__":
     print(f"unresolved_rows={len(unresolved)}")
     print(f"events_path={args.output_events}")
     print(f"unresolved_path={args.output_unresolved}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -277,7 +277,7 @@
     "selection_metric": "log_loss"
   },
   "saved_model": "boosted_hybrid",
-  "recommended_model": "boosted_hybrid",
+  "recommended_model": "elo_boosted_ensemble",
   "recommendation_metric": "log_loss",
   "elo": {
     "initial_rating": 1500.0,
@@ -324,6 +324,11 @@
       "accuracy": 0.6497149714971497,
       "log_loss": 0.6261601952533993,
       "brier_score": 0.2181221309772121
+    },
+    "elo_boosted_ensemble": {
+      "accuracy": 0.6497899789978998,
+      "log_loss": 0.6228846445175672,
+      "brier_score": 0.21663012727378755
     }
   },
   "calibration": {
@@ -334,6 +339,11 @@
     },
     "calibrated_boosted_hybrid": {
       "expected_calibration_error": 0.021968107072544915,
+      "bins": 10,
+      "games": 13332
+    },
+    "elo_boosted_ensemble": {
+      "expected_calibration_error": 0.030569105313372907,
       "bins": 10,
       "games": 13332
     },

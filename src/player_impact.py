@@ -894,7 +894,7 @@ def load_validation_data(connection):
     return player_games, team_games
 
 
-def main():
+def main(argv=None):
     import argparse
 
     parser = argparse.ArgumentParser()
@@ -903,7 +903,22 @@ def main():
         type=Path,
         help="CSV of independently sourced timestamped roster changes",
     )
-    arguments = parser.parse_args()
+    parser.add_argument(
+        "--validate-roster-events",
+        type=Path,
+        help="Validate an external roster-change CSV against the repository contract and print a summary JSON without running the impact benchmark.",
+    )
+    arguments = parser.parse_args(argv)
+    if arguments.validate_roster_events is not None:
+        if __package__:
+            from .roster_change_data import load_roster_change_events, summarize_roster_change_events
+        else:
+            from roster_change_data import load_roster_change_events, summarize_roster_change_events
+
+        events = load_roster_change_events(arguments.validate_roster_events)
+        print(json.dumps(summarize_roster_change_events(events), indent=2))
+        return 0
+
     with sqlite3.connect(DB_PATH) as connection:
         player_games, team_games = load_validation_data(connection)
     roster_events = None
@@ -920,7 +935,8 @@ def main():
     METRICS_PATH.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(metrics, indent=2))
     print(f"Saved to: {METRICS_PATH}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

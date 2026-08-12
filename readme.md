@@ -95,12 +95,16 @@ holdout, and records the best-performing candidate (by holdout log loss) as
 
 ```powershell
 .\.venv\Scripts\python src\main.py --home-team-id 1610612744 --away-team-id 1610612743 --game-date 2026-04-12
+.\.venv\Scripts\python src\main.py --home-team-id 1610612744 --away-team-id 1610612743 --summary
 ```
 
 `--game-date` is an optional cutoff: the CLI uses only pregame data available
 on or before that date (or the latest available data if omitted), so
-predictions remain leakage-safe. The CLI automatically serves whichever model
-`train_baseline_model.py` most recently recommended.
+predictions remain leakage-safe. `--summary` attaches the recommended model,
+holdout metrics, calibration diagnostics, and the top-ranked feature drivers in
+the same JSON result; `--explain` keeps the shorter top-feature-only view.
+The CLI automatically serves whichever model `train_baseline_model.py` most
+recently recommended.
 
 ## Interactive prediction interface
 
@@ -116,9 +120,17 @@ only — it adds no new modeling functionality.
 ## Player-impact diagnostics
 
 ```powershell
+.\.venv\Scripts\python src\roster_change_data.py --validate data/raw/roster_change_events_valid.csv
+.\.venv\Scripts\python src\player_impact.py --validate-roster-events data/raw/roster_change_events_valid.csv
 .\.venv\Scripts\python src\player_impact.py
 .\.venv\Scripts\python src\player_impact.py --roster-events data/raw/roster_change_events_valid.csv
 ```
+
+`src/player_impact.py --validate-roster-events PATH` and
+`src/roster_change_data.py --validate PATH` both validate an independent
+roster-change CSV against the project contract and print a JSON summary with
+counts, team/person coverage, and the event time window. This is the pre-flight
+check before running `src/player_impact.py --roster-events PATH`.
 
 This produces `models/player_impact_metrics.json`, an association-diagnostic
 report (not a causal projection) documented in detail in

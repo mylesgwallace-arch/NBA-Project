@@ -6,6 +6,7 @@ team-selection prompt so a user can pick two teams by name and get a
 prediction, instead of needing to know numeric team IDs.
 """
 
+import argparse
 import sqlite3
 from pathlib import Path
 
@@ -62,7 +63,76 @@ def prompt_optional_game_date():
     return game_date or None
 
 
-def run_interactive_session(db_path=DB_PATH):
+def summarize_model_features(result):
+    features = result.get("feature_importance", [])
+    if not features:
+        return None
+    lines = ["\nTop model features:"]
+    for feature in features:
+        lines.append(
+            f"  {feature['rank']}. {feature['feature']} ({feature['importance']:.1%})"
+        )
+    return "\n".join(lines)
+
+
+def summarize_model_report(result):
+    summary = result.get("model_summary")
+    if not summary:
+        return None
+    lines = ["\nModel summary:"]
+    model_name = summary.get("recommended_model", "unknown")
+    metric_name = summary.get("recommendation_metric", "log_loss")
+    lines.append(f"  Recommended model: {model_name} (lowest holdout {metric_name})")
+    metrics = summary.get("metrics") or {}
+    if metrics:
+        accuracy = metrics.get("accuracy")
+        if accuracy is not None:
+            lines.append(f"  Holdout accuracy: {accuracy:.1%}")
+        log_loss = metrics.get("log_loss")
+        if log_loss is not None:
+            lines.append(f"  Holdout log loss: {log_loss:.4f}")
+    calibration = summary.get("calibration") or {}
+    ece = calibration.get("expected_calibration_error")
+    if ece is not None:
+        lines.append(f"  Expected calibration error: {ece:.3f}")
+    comparison = summary.get("comparison") or {}
+    if comparison:
+        lines.append("  Model comparison:")
+        for name, values in comparison.items():
+            log_loss = values.get("log_loss")
+            if log_loss is None:
+                continue
+            ece = values.get("expected_calibration_error")
+            ece_text = f", ECE={ece:.3f}" if ece is not None else ""
+            lines.append(f"    - {name}: log_loss={log_loss:.4f}{ece_text}")
+    top_features = summary.get("top_features") or []
+    if top_features:
+        lines.append("  Top model features:")
+        for feature in top_features:
+            lines.append(
+                f"    {feature['rank']}. {feature['feature']} ({feature['importance']:.1%})"
+            )
+    return "\n".join(lines)
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Run the interactive NBA prediction interface."
+    )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Print the current top model features after the prediction.",
+    )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print the recommended model, holdout metrics, and calibration diagnostics after the prediction.",
+    )
+    return parser.parse_args(argv)
+
+
+def run_interactive_session(db_path=DB_PATH, explain=False, summary=False):
     teams = load_current_teams(db_path)
     if not teams:
         print("No current NBA teams found in the database.")
@@ -96,7 +166,14 @@ def run_interactive_session(db_path=DB_PATH):
     print(f"{away_label} win probability: {result['away_win_probability']:.1%}")
     favorite_label = home_label if result["home_team_prediction"] == "favorite" else away_label
     print(f"Predicted favorite: {favorite_label}")
+    if summary or explain or result.get("feature_importance") or result.get("model_summary"):
+        report = summarize_model_report(result) if summary or result.get("model_summary") else None
+        if not report:
+            report = summarize_model_features(result)
+        if report:
+            print(report)
 
 
 if __name__ == "__main__":
-    run_interactive_session()
+    args = parse_args()
+    run_interactive_session(explain=args.explain, summary=args.summary)

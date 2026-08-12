@@ -169,6 +169,23 @@ def predict_matchup_boosted_hybrid(
     }
 
 
+def predict_matchup_ensemble(
+    home_team_id,
+    away_team_id,
+    game_date,
+    features,
+    model_path,
+    metrics_path=METRICS_PATH,
+):
+    elo_probability, _ = predict_matchup_elo(
+        home_team_id, away_team_id, game_date, features, metrics_path
+    )
+    boosted_probability, feature_snapshot_date = predict_matchup_boosted_hybrid(
+        home_team_id, away_team_id, game_date, features, model_path, metrics_path
+    )
+    return (elo_probability + boosted_probability) / 2.0, feature_snapshot_date
+
+
 def predict_matchup_elo(
     home_team_id,
     away_team_id,
@@ -220,6 +237,48 @@ def load_feature_importance(metrics_path=METRICS_PATH, top_n=5):
     ]
 
 
+def load_model_summary(metrics_path=METRICS_PATH, top_n=5):
+    """Return the recommended model, its holdout metrics, and the main comparison signals."""
+    if not metrics_path.exists():
+        return None
+    metadata = json.loads(metrics_path.read_text(encoding="utf-8"))
+    recommended_model = metadata.get("recommended_model", "boosted_hybrid")
+    model_metrics = metadata.get("metrics", {}).get(recommended_model, {})
+    model_calibration = metadata.get("calibration", {}).get(recommended_model, {})
+    comparison_candidates = [
+        name
+        for name in (
+            "boosted_hybrid",
+            "calibrated_boosted_hybrid",
+            "elo",
+            "elo_boosted_ensemble",
+        )
+        if name in metadata.get("metrics", {})
+    ]
+    comparison = {}
+    for name in comparison_candidates:
+        metrics = metadata.get("metrics", {}).get(name, {})
+        calibration = metadata.get("calibration", {}).get(name, {})
+        comparison[name] = {
+            "accuracy": metrics.get("accuracy"),
+            "log_loss": metrics.get("log_loss"),
+            "brier_score": metrics.get("brier_score"),
+            "expected_calibration_error": calibration.get("expected_calibration_error"),
+        }
+    top_features = load_feature_importance(metrics_path, top_n=top_n)
+    summary = {
+        "recommended_model": recommended_model,
+        "recommendation_metric": metadata.get("recommendation_metric", "log_loss"),
+        "metrics": model_metrics,
+        "calibration": model_calibration,
+        "comparison": comparison,
+        "top_features": top_features,
+    }
+    if not model_metrics and not model_calibration and not top_features:
+        return None
+    return summary
+
+
 def predict_matchup(
     home_team_id,
     away_team_id,
@@ -235,6 +294,10 @@ def predict_matchup(
     if recommended_model == "elo":
         home_probability, feature_snapshot_date = predict_matchup_elo(
             home_team_id, away_team_id, game_date, features, metrics_path
+        )
+    elif recommended_model == "elo_boosted_ensemble":
+        home_probability, feature_snapshot_date = predict_matchup_ensemble(
+            home_team_id, away_team_id, game_date, features, model_path, metrics_path
         )
     elif recommended_model in {"boosted_hybrid", "calibrated_boosted_hybrid"}:
         home_probability, feature_snapshot_date = predict_matchup_boosted_hybrid(
@@ -261,6 +324,9 @@ def predict_matchup(
     feature_importance = load_feature_importance(metrics_path)
     if feature_importance:
         result["feature_importance"] = feature_importance
+    model_summary = load_model_summary(metrics_path)
+    if model_summary:
+        result["model_summary"] = model_summary
     return result
 
 
@@ -287,6 +353,11 @@ def parse_args(argv=None):
         action="store_true",
         help="Include the top model features and their normalized importance weights in the JSON output.",
     )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Include the recommended model, holdout metrics, calibration diagnostics, and top feature drivers in the JSON output.",
+    )
     return parser.parse_args(argv)
 
 
@@ -305,6 +376,8 @@ def main(argv=None):
             "model": result.get("model"),
             "top_features": load_feature_importance(METRICS_PATH, top_n=5),
         }
+    if args.summary:
+        result["model_summary"] = load_model_summary(METRICS_PATH)
     print(json.dumps(result, indent=2))
     return 0
 

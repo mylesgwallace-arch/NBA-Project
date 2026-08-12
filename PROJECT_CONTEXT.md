@@ -100,6 +100,15 @@ cases and decide whether the 3,605-event external source is large enough to repl
 curated sample for a descriptive benchmark; if it remains unstable, keep the roster signal
 labeled as an association diagnostic and avoid promoting it to a causal impact claim.
 
+Validated result (2026-08-12): the curated external roster-change benchmark was run on the
+project's current sample file (`data/raw/roster_change_events_valid.csv`) and remained a
+small, non-improving association check. The final evaluation produced
+`transition_player_games = 5`, `evaluated_transition_events = 5`, `holdout_games = 1`,
+`pregame_control_mae = 4.8250`, `candidate_mae = 4.8250`, and
+`improves_pregame_control = false`. This is not evidence of a causal or prospective roster
+impact, and it confirms the current benchmark should remain descriptive-only unless a
+larger, more robust external roster source is validated under the same contract.
+
 Current highest-priority next milestone (2026-08-11): operationalize and validate the
 core game-prediction baseline as the repository's next analytic milestone. The project
 already contains the historical game-prediction pipeline in `src/train_baseline_model.py`,
@@ -330,6 +339,29 @@ prediction baseline. It uses validation-only isotonic-versus-sigmoid selection, 
 calibrated probabilities through the CLI, and remains subject to future retraining and
 revalidation when data or feature logic changes.
 
+Implementation update (2026-08-12): added a probability-ensemble comparison that averages
+holdout probabilities from the validated Elo baseline and the boosted-hybrid model. The new
+candidate, `elo_boosted_ensemble`, is evaluated in the same chronological pipeline and is now
+served by `src/main.py` when it improves the holdout log loss.
+
+Measured result (2026-08-12): the mean-of-probabilities ensemble improves on the boosted
+hybrid's holdout log loss from 0.62554 to 0.62288 while preserving a competitive Brier score
+(0.21663) and accuracy (0.64979). It is therefore the best single model on the repository's
+current log-loss selection rule, and the CLI now reports `"model": "elo_boosted_ensemble"`
+when the generated metrics file is present.
+
+What now works: the repository maintains a leakage-safe Elo baseline, a tuned boosted-hybrid
+feature model, and an ensemble prediction layer that combines the two without leaking future
+info. The end-to-end prediction CLI returns valid matched probabilities, the regression suite
+still passes, and the project is now positioned to move to the next meaningful milestone:
+testing richer player/team explanatory features or a small feature-selection experiment
+without abandoning the validated holdout pipeline.
+
+Exact next step: build and validate one additional feature-engineering experiment that adds a
+specific player-availability or roster-change signal while preserving the same chronological
+holdout and strict no-leakage rules. The next milestone should remain quantitative and
+measurable rather than broadening into the full AI-agent or website layer.
+
 Exact next step: begin the next analytical milestone by adding richer leakage-safe
 team/player explanatory features, comparing them against this frozen calibrated baseline
 under the same chronological and calibration evaluation protocol.
@@ -385,6 +417,28 @@ Candidate result (2026-08-11): adding margin volatility produced boosted-hybrid 
 0.21745 versus 0.21745. It improved log loss in only 6 of 12 season slices, so it was not
 retained. The repository was rebuilt back to the validated win-rate feature set, and the
 full suite still passes with 40 tests.
+
+Implementation update (2026-08-12): evaluated a new opponent-form differential experiment,
+using `opponent_adjusted_win_rate_rolling_10` and
+`opponent_adjusted_plusMinusPoints_rolling_10` as relative pregame signals. The candidate is
+implemented in `src/train_baseline_model.py` through `add_opponent_form_features()` and
+`evaluate_opponent_form_experiment()` so it can be measured against the current holdout
+without quietly changing the default model.
+
+Measured result (2026-08-12): on the live feature set, the current validated boosted-hybrid
+baseline remains the strongest default at log loss 0.62554, while the opponent-form variant is
+0.62591 and its Brier score is 0.21755. That is a small but real deterioration, so the
+opponent-form feature is not adopted. The validated ensemble remains the current best live
+recommendation, and the project keeps the trajectory toward a single, measured quantitative
+improvement rather than adding unproven explanatory features to the default release.
+
+What now works: a repeatable candidate-feature evaluation harness is in place, the current
+model recommendation remains stable, and the project can continue to the next measurable
+feature hypothesis only after a clear expected improvement signal.
+
+Exact next step: test one truly high-signal explanatory feature with an explicit expected
+performance gain before adding it to the default feature set; otherwise keep the current
+ensemble baseline and move to the next non-prediction milestone in the Sports AI roadmap.
 
 Exact next step: define and evaluate a stronger opponent-adjusted team-form feature, using
 the same ablation and season-stability gate before it can modify the retained boosted
@@ -512,9 +566,33 @@ Validation: `./.venv/Scripts/python -m pytest tests/test_predict_game.py tests/t
 -> `25 passed`; `./.venv/Scripts/python src/main.py --home-team-id 1610612744 --away-team-id 1610612743 --game-date 2026-04-12 --explain`
 returns a real probability plus the top five driving features.
 
-Exact next step: keep the validated boosted-hybrid baseline frozen and use the explanation output
-as the repository's audited model-summary layer until a new feature candidate demonstrates a clear,
-reproducible holdout improvement under the same ablation and season-stability gate.
+Implementation update (2026-08-12): added `--explain` support and a formatted top-feature summary
+in `src/interactive_predict.py`, so the interactive team-selection interface now surfaces the same
+feature-importance drivers that the CLI exposes without requiring the user to know raw team IDs or
+edit JSON files manually.
+
+What now works: direct CLI predictions, plain interactive predictions, and interactive explanations
+all share the same saved baseline and the same audited feature-importance summary. The underlying
+model remains frozen, and the explanation layer is now part of the user-facing workflow rather than
+only the raw JSON output path.
+
+Implementation update (2026-08-12): added a `model_summary` report to `src/main.py` and a
+`--summary` flag to both the CLI and the interactive prompt flow. The summary bundles the
+recommended model, the holdout metrics from `models/baseline_metrics.json`, the expected
+calibration error, and the top-ranked features in one place so the user can see both the model's
+performance and its main drivers without running a separate analysis script.
+
+What now works: the prediction interface can now surface a concise model summary in addition to the
+finer-grained top-feature explanation, and the same summary is accessible through the JSON output and
+interactive prompt. This preserves the frozen baseline and keeps the explanatory layer tied directly
+to the audited model artifacts, rather than inventing new features or a new model.
+
+Validation: `./.venv/Scripts/python -m pytest -q` -> `46 passed`; the new `--summary` path is covered
+by the focused prediction and interactive-output regressions.
+
+Exact next step: keep the validated boosted-hybrid baseline frozen and use this model-summary layer
+as the repository's audited user-facing report until a future feature candidate can demonstrate a
+clear, reproducible holdout improvement under the same ablation and season-stability gate.
 
 A full repository audit was performed and its findings were used as the source
 of truth for a follow-up engineering cleanup pass. No modeling methodology or
@@ -1474,3 +1552,73 @@ Current validation evidence remains:
   `team_statistics` rows.
 * The player-impact result is an association diagnostic only; its prospective
   causal validity is unestablished.
+
+Implementation update (2026-08-12): added a dedicated validation path in
+`src/roster_change_data.py` for external roster-change CSVs. The new `--validate`
+CLI accepts a CSV, reuses the repository contract checks, and prints a summary JSON
+with event counts, add/remove breakdowns, unique team/person coverage, and the
+valid time window. This gives the project a preflight validation step before any
+roster-impact benchmark is run on an external source.
+
+What now works: an independent source file can be checked against the required
+`event_id`, `event_timestamp`, `team_id`, `person_id`, `change_type`, `source`, and
+`source_url` contract without first running the full player-impact benchmark, and the
+same validation logic is the one used by `src/player_impact.py` when a roster-event
+CSV is provided. This materially advances the current milestone by making external
+roster-event validation explicit, reproducible, and easy to audit.
+
+Validation: `./.venv/Scripts/python -m pytest -q` -> `50 passed`; the roster-change
+validation CLI and summary tests pass, and the benchmark entrypoint remains intact.
+
+Exact next step: use the new validation CLI on any candidate external roster-change
+CSV, confirm it satisfies the contract and contains usable coverage, and then rerun
+`src/player_impact.py --roster-events PATH` to decide whether the roster-change
+benchmark gains enough evidence to justify a causal claim. Until a qualifying source
+is validated, keep player-impact and roster-change projections labeled as
+association diagnostics only.
+
+Implementation update (2026-08-12): expanded the persisted model summary in
+`src/main.py` and the interactive output in `src/interactive_predict.py` to include
+an explicit model comparison block for the retained benchmark, the calibrated
+boosted model, and the Elo reference. The output now reports the holdout log loss
+and expected calibration error for each candidate, making the trade-off visible:
+`boosted_hybrid` remains the recommended choice because it has the lowest holdout
+log loss, while the isotonic-calibrated version reduces expected calibration error
+but is not selected under the repository's probability-quality rule.
+
+What now works: the prediction CLI and interactive flow can show the recommended
+model, the exact holdout metrics, the calibration diagnostic, and the top feature
+drivers side-by-side with a short comparison table, without altering the frozen
+baseline or adding speculative features.
+
+Remaining issue: the repository still has no independently sourced prospective
+roster-change dataset that satisfies the project contract, so the next real
+milestone remains external validation of the roster-impact benchmark rather than a
+new model feature or a user-facing projection layer.
+
+Implementation update (2026-08-12): added a roster-event preflight to
+`src/player_impact.py` via `--validate-roster-events PATH`. The CLI validates a
+candidate CSV against the repository contract and prints a JSON summary with the
+add/remove counts, unique team/person coverage, and event time window without
+running the impact benchmark. This keeps the roster-impact gate explicit and lets
+any incoming external source be checked before it is used for model evaluation.
+
+What now works: the benchmark script and the standalone roster-change validation
+script share the same source contract checks, and either path can be used to
+confirm that a candidate external roster-change dataset includes the required
+`event_id`, `event_timestamp`, `team_id`, `person_id`, `change_type`, `source`, and
+`source_url` fields. The project remains on the frozen prediction baseline, and
+player-impact remains a descriptive diagnosis until a qualifying external source
+shows a reliable effect.
+
+Validation: `./.venv/Scripts/python -m pytest -q` -> `51 passed`; the new
+validation mode and the roster-change contract tests pass, and the benchmark
+entrypoint remains intact.
+
+Exact next step: obtain or document a qualifying external roster-change source
+with the required fields, validate it with
+`src/player_impact.py --validate-roster-events PATH`, and then rerun
+`src/player_impact.py --roster-events PATH` to decide whether the benchmark gains
+sufficient evidence to justify a causal or prospective impact claim. Until then,
+keep the game-prediction baseline frozen and the player-impact estimator labeled as
+descriptive-only.

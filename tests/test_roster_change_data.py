@@ -1,7 +1,12 @@
 import pandas as pd
 import pytest
 
-from src.roster_change_data import load_roster_change_events, validate_roster_change_events
+from src.roster_change_data import (
+    load_roster_change_events,
+    main,
+    summarize_roster_change_events,
+    validate_roster_change_events,
+)
 
 
 def _events():
@@ -46,6 +51,30 @@ def test_loader_reads_csv_through_the_same_validation_path(tmp_path):
 
     assert len(result) == 2
     assert result["event_id"].tolist() == ["a", "b"]
+
+
+def test_summary_reports_counts_and_time_window():
+    summary = summarize_roster_change_events(_events())
+
+    assert summary["event_count"] == 2
+    assert summary["add_count"] == 1
+    assert summary["remove_count"] == 1
+    assert summary["team_count"] == 2
+    assert summary["person_count"] == 2
+    assert summary["first_event_timestamp"].startswith("2024-10-01T19:00:00+00:00")
+    assert summary["last_event_timestamp"].startswith("2024-10-02T19:00:00+00:00")
+
+
+def test_main_validate_mode_prints_json_summary(tmp_path, capsys):
+    path = tmp_path / "roster_changes.csv"
+    _events().to_csv(path, index=False)
+
+    exit_code = main(["--validate", str(path)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert '"event_count": 2' in captured.out
+    assert '"add_count": 1' in captured.out
 
 
 @pytest.mark.parametrize(

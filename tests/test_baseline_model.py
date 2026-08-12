@@ -6,6 +6,8 @@ from sklearn.linear_model import LogisticRegression
 
 from src.train_baseline_model import (
     add_elo_rating_deltas,
+    add_opponent_form_features,
+    average_probability_predictions,
     build_game_dataset,
     compare_calibration_methods,
     elo_win_probability,
@@ -15,6 +17,7 @@ from src.train_baseline_model import (
     evaluate_calibration_by_group,
     evaluate_elo,
     evaluate_elo_by_season,
+    evaluate_opponent_form_experiment,
     select_recommended_model,
     summarize_feature_importance,
     tune_hybrid_logistic,
@@ -217,6 +220,75 @@ def test_select_recommended_model_excludes_trivial_home_win_rate_baseline():
     }
 
     assert select_recommended_model(metrics) == "rolling_logistic"
+
+
+def test_average_probability_predictions_returns_simple_mean():
+    probabilities = [
+        pd.Series([0.8, 0.3, 0.9]),
+        pd.Series([0.6, 0.2, 0.8]),
+    ]
+
+    ensemble = average_probability_predictions(*probabilities)
+
+    np.testing.assert_allclose(ensemble, np.array([0.7, 0.25, 0.85]))
+
+
+def test_select_recommended_model_prefers_ensemble_when_it_has_best_log_loss():
+    metrics = {
+        "home_win_rate": {"accuracy": 0.5, "log_loss": 0.69, "brier_score": 0.25},
+        "elo": {"accuracy": 0.6497, "log_loss": 0.6262, "brier_score": 0.2181},
+        "boosted_hybrid": {"accuracy": 0.6522, "log_loss": 0.6255, "brier_score": 0.2174},
+        "elo_boosted_ensemble": {
+            "accuracy": 0.6498,
+            "log_loss": 0.6229,
+            "brier_score": 0.2166,
+        },
+    }
+
+    assert select_recommended_model(metrics) == "elo_boosted_ensemble"
+
+
+def test_add_opponent_form_features_creates_relative_form_columns():
+    features = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "teamId": 10,
+                "opponentTeamId": 20,
+                "win_rate_rolling_10": 0.7,
+                "plusMinusPoints_rolling_10": 5.0,
+            },
+            {
+                "gameId": 1,
+                "teamId": 20,
+                "opponentTeamId": 10,
+                "win_rate_rolling_10": 0.5,
+                "plusMinusPoints_rolling_10": 2.0,
+            },
+        ]
+    )
+
+    augmented = add_opponent_form_features(features)
+
+    assert "opponent_adjusted_win_rate_rolling_10" in augmented.columns
+    assert "opponent_adjusted_plusMinusPoints_rolling_10" in augmented.columns
+    assert np.isclose(
+        augmented.loc[augmented["teamId"] == 10, "opponent_adjusted_win_rate_rolling_10"].iloc[0],
+        0.2,
+    )
+    assert np.isclose(
+        augmented.loc[augmented["teamId"] == 10, "opponent_adjusted_plusMinusPoints_rolling_10"].iloc[0],
+        3.0,
+    )
+
+
+def test_evaluate_opponent_form_experiment_reports_key_metrics():
+    features = pd.read_csv("data/processed/game_features.csv")
+    metrics = evaluate_opponent_form_experiment(features)
+
+    assert set(metrics) >= {"baseline", "with_opponent_form"}
+    assert "opponent_adjusted_win_rate_rolling_10" in metrics["augmented_feature_names"]
+    assert set(metrics["baseline"]) >= {"accuracy", "log_loss", "brier_score"}
 
 
 def test_add_elo_rating_deltas_tracks_pregame_strength_gap():

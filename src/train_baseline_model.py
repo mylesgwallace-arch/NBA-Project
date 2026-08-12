@@ -313,6 +313,152 @@ def evaluate_predictions(target, probabilities):
     }
 
 
+def add_opponent_form_features(features):
+    """Compute a controlled opponent-form differential for feature testing.
+
+    These columns are intentionally evaluated as a candidate signal rather than
+    being promoted into the default production feature set until they beat the
+    validated holdout baseline.
+    """
+    required_columns = {
+        "gameId",
+        "teamId",
+        "opponentTeamId",
+        "win_rate_rolling_10",
+        "plusMinusPoints_rolling_10",
+    }
+    if not required_columns.issubset(features.columns):
+        return features.copy()
+
+    opponent_win = (
+        features[["gameId", "teamId", "win_rate_rolling_10"]]
+        .rename(
+            columns={
+                "teamId": "opponentTeamId",
+                "win_rate_rolling_10": "opponent_win_rate_rolling_10",
+            }
+        )
+    )
+    merged = features.merge(
+        opponent_win,
+        on=["gameId", "opponentTeamId"],
+        how="left",
+        validate="many_to_one",
+    )
+    merged["opponent_adjusted_win_rate_rolling_10"] = (
+        merged["win_rate_rolling_10"] - merged["opponent_win_rate_rolling_10"]
+    )
+
+    opponent_margin = (
+        features[["gameId", "teamId", "plusMinusPoints_rolling_10"]]
+        .rename(
+            columns={
+                "teamId": "opponentTeamId",
+                "plusMinusPoints_rolling_10": "opponent_plusMinusPoints_rolling_10",
+            }
+        )
+    )
+    merged = merged.merge(
+        opponent_margin,
+        on=["gameId", "opponentTeamId"],
+        how="left",
+        validate="many_to_one",
+    )
+    merged["opponent_adjusted_plusMinusPoints_rolling_10"] = (
+        merged["plusMinusPoints_rolling_10"]
+        - merged["opponent_plusMinusPoints_rolling_10"]
+    )
+    return merged
+
+
+def evaluate_opponent_form_experiment(features, parameters=None):
+    """Measure a small opponent-form feature set against the current baseline.
+
+    The experiment is intentionally descriptive: it is used to decide whether the
+    current validated model remains the right default. The default baseline remains
+    the same unless the candidate clearly reduces holdout log loss.
+    """
+    if parameters is None:
+        parameters = {
+            "max_depth": 4,
+            "learning_rate": 0.05,
+            "max_iter": 200,
+            "random_state": 42,
+        }
+
+    baseline_games, baseline_columns = build_game_dataset(features)
+    baseline_games = add_elo_rating_deltas(baseline_games)
+    baseline_columns = baseline_columns + ["elo_delta"]
+
+    augmented_features = add_opponent_form_features(features)
+    augmented_games, augmented_columns = build_game_dataset(augmented_features)
+    augmented_games = add_elo_rating_deltas(augmented_games)
+    augmented_columns = augmented_columns + ["elo_delta"]
+
+    split = int(len(baseline_games) * (1 - TEST_FRACTION))
+    baseline_train = baseline_games.iloc[:split]
+    baseline_test = baseline_games.iloc[split:]
+    augmented_train = augmented_games.iloc[:split]
+    augmented_test = augmented_games.iloc[split:]
+
+    baseline_model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("boosted", HistGradientBoostingClassifier(**parameters)),
+        ]
+    )
+    baseline_model.fit(baseline_train[baseline_columns], baseline_train["target"])
+    baseline_probabilities = baseline_model.predict_proba(
+        baseline_test[baseline_columns]
+    )[:, 1]
+
+    augmented_model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("boosted", HistGradientBoostingClassifier(**parameters)),
+        ]
+    )
+    augmented_model.fit(augmented_train[augmented_columns], augmented_train["target"])
+    augmented_probabilities = augmented_model.predict_proba(
+        augmented_test[augmented_columns]
+    )[:, 1]
+
+    return {
+        "baseline": evaluate_predictions(baseline_test["target"], baseline_probabilities),
+        "with_opponent_form": evaluate_predictions(
+            augmented_test["target"], augmented_probabilities
+        ),
+        "baseline_columns": baseline_columns,
+        "augmented_columns": augmented_columns,
+        "augmented_feature_names": [
+            column
+            for column in [
+                "opponent_adjusted_win_rate_rolling_10",
+                "opponent_adjusted_plusMinusPoints_rolling_10",
+            ]
+            if column in augmented_columns
+        ],
+    }
+
+
+def average_probability_predictions(*probability_sets):
+    if not probability_sets:
+        raise ValueError("At least one probability series is required.")
+    arrays = [np.asarray(values, dtype=float) for values in probability_sets]
+    reference = arrays[0]
+    for index, values in enumerate(arrays[1:], start=1):
+        if values.shape != reference.shape:
+            raise ValueError(
+                f"Probability arrays must share the same shape; "
+                f"series 0 has {reference.shape} but series {index} has {values.shape}."
+            )
+    return np.mean(np.stack(arrays, axis=0), axis=0)
+
+
+def evaluate_probability_ensemble(target, *probability_sets):
+    return evaluate_predictions(target, average_probability_predictions(*probability_sets))
+
+
 def summarize_feature_importance(model, columns, top_n=10, X=None, y=None):
     """Summarize a model's relative feature importance for interpretability.
 
@@ -699,6 +845,16 @@ def main():
     elo_predictions = elo_test_predictions(games, split)
     elo_probabilities = pd.Series(
         elo_predictions["probability"].to_numpy(), index=test.index
+    )
+    predictions["elo_boosted_ensemble"] = pd.Series(
+        (predictions["boosted_hybrid"].to_numpy() + elo_probabilities.to_numpy()) / 2.0,
+        index=test.index,
+    )
+    metrics["elo_boosted_ensemble"] = evaluate_predictions(
+        test["target"], predictions["elo_boosted_ensemble"]
+    )
+    calibration["elo_boosted_ensemble"] = evaluate_calibration(
+        test["target"], predictions["elo_boosted_ensemble"]
     )
     calibration["elo"] = evaluate_calibration(test["target"], elo_probabilities)
     elo_season_metrics = evaluate_elo_by_season(games, split)

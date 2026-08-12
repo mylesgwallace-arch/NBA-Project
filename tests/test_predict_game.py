@@ -6,6 +6,7 @@ from src.main import (
     build_prediction_row,
     compute_elo_ratings_as_of,
     load_feature_importance,
+    load_model_summary,
     load_recommended_model_name,
     lookup_last_team_row,
     predict_matchup,
@@ -157,6 +158,43 @@ def test_load_feature_importance_reads_top_features_from_metrics(tmp_path):
     assert features[0]["importance"] == 0.7
 
 
+def test_load_model_summary_includes_metrics_and_top_features(tmp_path):
+    metrics_path = tmp_path / "baseline_metrics.json"
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "recommended_model": "boosted_hybrid",
+                "recommendation_metric": "log_loss",
+                "metrics": {
+                    "boosted_hybrid": {"accuracy": 0.67, "log_loss": 0.62},
+                    "calibrated_boosted_hybrid": {"accuracy": 0.65, "log_loss": 0.64},
+                    "elo": {"accuracy": 0.66, "log_loss": 0.63},
+                },
+                "calibration": {
+                    "boosted_hybrid": {"expected_calibration_error": 0.05},
+                    "calibrated_boosted_hybrid": {"expected_calibration_error": 0.03},
+                    "elo": {"expected_calibration_error": 0.04},
+                },
+                "feature_importance": {
+                    "features": [
+                        {"rank": 1, "feature": "elo_delta", "importance": 0.7},
+                        {"rank": 2, "feature": "win_rate_rolling_10", "importance": 0.2},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = load_model_summary(metrics_path)
+
+    assert summary["recommended_model"] == "boosted_hybrid"
+    assert summary["metrics"]["log_loss"] == 0.62
+    assert summary["calibration"]["expected_calibration_error"] == 0.05
+    assert summary["comparison"]["calibrated_boosted_hybrid"]["log_loss"] == 0.64
+    assert summary["top_features"][0]["feature"] == "elo_delta"
+
+
 def test_predict_matchup_uses_elo_when_recommended(tmp_path):
     features_path = tmp_path / "game_features.csv"
     metrics_path = tmp_path / "baseline_metrics.json"
@@ -264,5 +302,71 @@ def test_predict_matchup_uses_boosted_hybrid_when_recommended(tmp_path):
     )
 
     assert result["model"] == "calibrated_boosted_hybrid"
+    assert "feature_snapshot_date" in result
+    assert 0.0 <= result["home_win_probability"] <= 1.0
+
+
+def test_predict_matchup_uses_ensemble_when_recommended(tmp_path):
+    features_path = tmp_path / "game_features.csv"
+    metrics_path = tmp_path / "baseline_metrics.json"
+    model_path = tmp_path / "baseline_logistic.pkl"
+
+    features = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-01",
+                "teamId": 10,
+                "home": 1,
+                "win": 1,
+                "teamScore_rolling_10": 100,
+                "rest_days": 2,
+            },
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-01",
+                "teamId": 20,
+                "home": 0,
+                "win": 0,
+                "teamScore_rolling_10": 95,
+                "rest_days": 1,
+            },
+        ]
+    )
+    features.to_csv(features_path, index=False)
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "recommended_model": "elo_boosted_ensemble",
+                "elo": {"initial_rating": 1500.0, "k_factor": 20.0, "home_advantage": 65.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    model_bundle = {
+        "model": __import__("sklearn.ensemble", fromlist=["HistGradientBoostingClassifier"]).HistGradientBoostingClassifier(),
+        "predictors": ["teamScore_rolling_10", "rest_days"],
+    }
+    model_bundle["model"].fit(
+        pd.DataFrame([
+            {"teamScore_rolling_10": 5.0, "rest_days": 1.0},
+            {"teamScore_rolling_10": -2.0, "rest_days": -1.0},
+        ]),
+        [1, 0],
+    )
+    with model_path.open("wb") as handle:
+        import pickle
+
+        pickle.dump(model_bundle, handle)
+
+    result = predict_matchup(
+        home_team_id=10,
+        away_team_id=20,
+        features_path=features_path,
+        model_path=model_path,
+        metrics_path=metrics_path,
+    )
+
+    assert result["model"] == "elo_boosted_ensemble"
     assert "feature_snapshot_date" in result
     assert 0.0 <= result["home_win_probability"] <= 1.0
