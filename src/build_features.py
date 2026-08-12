@@ -30,6 +30,7 @@ PERCENTAGE_STATS = [
 ]
 PLAYER_FEATURE = "active_players_rolling_10"
 LAST_GAME_PLAYER_FEATURE = "active_players_last_game"
+WIN_RATE_FEATURE = "win_rate_rolling_10"
 PLAYER_HISTORY_FEATURES = {
     "player_minutes_rolling_10": "minutes",
     "player_points_rolling_10": "points",
@@ -201,6 +202,31 @@ def add_pregame_player_features(team_games, activity, player_history=None):
     return result
 
 
+def add_opponent_adjusted_win_rate(team_games):
+    """Compute a candidate pregame opponent-form differential.
+
+    Kept as an explicit evaluation helper rather than added to the active feature
+    pipeline, because it is a candidate explanatory signal under review and the
+    retained model is intentionally frozen while such features are validated.
+    """
+    opponent_wins = team_games[["gameId", "teamId", "win_rate_rolling_10"]].rename(
+        columns={
+            "teamId": "opponentTeamId",
+            "win_rate_rolling_10": "opponent_win_rate_rolling_10",
+        }
+    )
+    merged = team_games.merge(
+        opponent_wins,
+        on=["gameId", "opponentTeamId"],
+        how="left",
+        validate="many_to_one",
+    )
+    merged["opponent_adjusted_win_rate_rolling_10"] = (
+        merged["win_rate_rolling_10"] - merged["opponent_win_rate_rolling_10"]
+    )
+    return merged
+
+
 def build_features():
     with sqlite3.connect(DB_PATH) as connection:
         df = load_team_games(connection)
@@ -229,12 +255,16 @@ def build_features():
             df.groupby("teamId")[stat]
             .transform(lambda values: values.shift(1).rolling(10, min_periods=5).mean())
         )
-
+    df[WIN_RATE_FEATURE] = (
+        df.groupby("teamId")["win"]
+        .transform(lambda values: values.shift(1).rolling(10, min_periods=5).mean())
+    )
     df = add_pregame_player_features(df, activity, player_history)
     rolling_columns = [f"{stat}_rolling_10" for stat in STATS]
     df = df.dropna(
         subset=STATS
         + rolling_columns
+        + [WIN_RATE_FEATURE]
         + ["rest_days"]
     )
 

@@ -102,6 +102,17 @@ on or before that date (or the latest available data if omitted), so
 predictions remain leakage-safe. The CLI automatically serves whichever model
 `train_baseline_model.py` most recently recommended.
 
+## Interactive prediction interface
+
+```powershell
+.\.venv\Scripts\python src\interactive_predict.py
+```
+
+Prompts you to pick a home team and an away team by name from a numbered list
+(and an optional game date), then prints the win probabilities using the same
+validated `predict_matchup` logic as the CLI above. This is a thin interface
+only — it adds no new modeling functionality.
+
 ## Player-impact diagnostics
 
 ```powershell

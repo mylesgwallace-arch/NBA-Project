@@ -8,6 +8,7 @@ from src.main import (
     load_recommended_model_name,
     lookup_last_team_row,
     predict_matchup,
+    validate_prediction_probability,
 )
 
 
@@ -34,6 +35,16 @@ def test_build_prediction_row_uses_home_minus_away_differences():
     assert frame.loc[0, "teamScore_rolling_10"] == 6.0
     assert frame.loc[0, "rest_days"] == 1.0
     assert frame.loc[0, "active_players_last_game"] == 2.0
+
+
+def test_validate_prediction_probability_rejects_nonfinite_or_out_of_range_values():
+    for probability in (-0.01, 1.01, float("nan"), float("inf")):
+        try:
+            validate_prediction_probability(probability)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Expected invalid probability to fail: {probability!r}")
 
 
 def test_lookup_last_team_row_respects_game_date_cutoff():
@@ -117,7 +128,7 @@ def test_compute_elo_ratings_as_of_uses_all_games_when_cutoff_is_none():
 def test_load_recommended_model_name_falls_back_when_metrics_file_missing(tmp_path):
     missing_path = tmp_path / "does_not_exist.json"
 
-    assert load_recommended_model_name(missing_path) == "player_history_logistic"
+    assert load_recommended_model_name(missing_path) == "boosted_hybrid"
 
 
 def test_predict_matchup_uses_elo_when_recommended(tmp_path):
@@ -169,3 +180,63 @@ def test_predict_matchup_uses_elo_when_recommended(tmp_path):
     assert result["model"] == "elo"
     assert "feature_snapshot_date" not in result
     assert result["home_win_probability"] > result["away_win_probability"]
+
+
+def test_predict_matchup_uses_boosted_hybrid_when_recommended(tmp_path):
+    features_path = tmp_path / "game_features.csv"
+    metrics_path = tmp_path / "baseline_metrics.json"
+    model_path = tmp_path / "baseline_logistic.pkl"
+
+    features = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-01",
+                "teamId": 10,
+                "home": 1,
+                "win": 1,
+                "teamScore_rolling_10": 100,
+                "rest_days": 2,
+            },
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-01",
+                "teamId": 20,
+                "home": 0,
+                "win": 0,
+                "teamScore_rolling_10": 95,
+                "rest_days": 1,
+            },
+        ]
+    )
+    features.to_csv(features_path, index=False)
+    metrics_path.write_text(
+        json.dumps(        {"recommended_model": "calibrated_boosted_hybrid"}),
+        encoding="utf-8",
+    )
+    model_bundle = {
+        "model": __import__("sklearn.ensemble", fromlist=["HistGradientBoostingClassifier"]).HistGradientBoostingClassifier(),
+        "predictors": ["teamScore_rolling_10", "rest_days"],
+    }
+    model_bundle["model"].fit(
+        pd.DataFrame(
+            [{"teamScore_rolling_10": 5.0, "rest_days": 1.0}, {"teamScore_rolling_10": -2.0, "rest_days": -1.0}]
+        ),
+        [1, 0],
+    )
+    with model_path.open("wb") as handle:
+        import pickle
+
+        pickle.dump(model_bundle, handle)
+
+    result = predict_matchup(
+        home_team_id=10,
+        away_team_id=20,
+        features_path=features_path,
+        model_path=model_path,
+        metrics_path=metrics_path,
+    )
+
+    assert result["model"] == "calibrated_boosted_hybrid"
+    assert "feature_snapshot_date" in result
+    assert 0.0 <= result["home_win_probability"] <= 1.0

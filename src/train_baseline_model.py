@@ -2,12 +2,27 @@ import json
 import pickle
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
+
+try:
+    from src.model_calibration import (
+        CalibratedProbabilityModel,
+        IsotonicProbabilityCalibrator,
+        SigmoidProbabilityCalibrator,
+    )
+except ImportError:
+    from model_calibration import (
+        CalibratedProbabilityModel,
+        IsotonicProbabilityCalibrator,
+        SigmoidProbabilityCalibrator,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +39,12 @@ ELO_PARAMETER_GRID = [
     {"k_factor": 30.0, "home_advantage": 65.0},
     {"k_factor": 40.0, "home_advantage": 100.0},
 ]
+BOOSTED_HYBRID_PARAMETER_GRID = [
+    {"max_depth": 3, "learning_rate": 0.03, "max_iter": 200, "random_state": 42},
+    {"max_depth": 4, "learning_rate": 0.05, "max_iter": 200, "random_state": 42},
+    {"max_depth": 4, "learning_rate": 0.1, "max_iter": 200, "random_state": 42},
+    {"max_depth": 5, "learning_rate": 0.05, "max_iter": 300, "random_state": 42},
+]
 
 
 def build_game_dataset(features):
@@ -32,6 +53,7 @@ def build_game_dataset(features):
         "player_points_rolling_10",
         "player_assists_rolling_10",
         "player_rebounds_rolling_10",
+        "player_points_per_minute_rolling_10",
     }
     rolling_columns = [
         column
@@ -126,6 +148,40 @@ def evaluate_elo(
     return evaluate_predictions(pd.Series(test_targets), pd.Series(test_probabilities))
 
 
+def add_elo_rating_deltas(
+    games,
+    initial_rating=ELO_INITIAL_RATING,
+    k_factor=ELO_K_FACTOR,
+    home_advantage=ELO_HOME_ADVANTAGE,
+):
+    """Add a leakage-safe pregame Elo gap to each game row.
+
+    Each row uses the rating state that existed before the game start, so the
+    feature is based only on chronologically prior results.
+    """
+    ratings = {}
+    game_rows = []
+
+    for _, game in games.iterrows():
+        home_team = game["homeTeamId"]
+        away_team = game["awayTeamId"]
+        home_rating = ratings.get(home_team, initial_rating)
+        away_rating = ratings.get(away_team, initial_rating)
+        probability = elo_win_probability(home_rating, away_rating, home_advantage)
+        elo_delta = home_rating - away_rating + home_advantage
+
+        row = game.copy()
+        row["elo_delta"] = elo_delta
+        row["elo_probability"] = probability
+        game_rows.append(row)
+
+        outcome = game["target"]
+        ratings[home_team] = home_rating + k_factor * (outcome - probability)
+        ratings[away_team] = away_rating + k_factor * ((1 - outcome) - (1 - probability))
+
+    return pd.DataFrame(game_rows).reset_index(drop=True)
+
+
 def elo_test_predictions(
     games,
     split,
@@ -196,6 +252,41 @@ def evaluate_elo_parameter_grid(games, split):
     return results
 
 
+def evaluate_boosted_hybrid_parameter_grid(train, test, columns):
+    results = []
+    for parameters in BOOSTED_HYBRID_PARAMETER_GRID:
+        model = Pipeline(
+            [
+                ("impute", SimpleImputer(strategy="median")),
+                ("boosted", HistGradientBoostingClassifier(**parameters)),
+            ]
+        )
+        model.fit(train[columns], train["target"])
+        probabilities = model.predict_proba(test[columns])[:, 1]
+        metrics = evaluate_predictions(test["target"], probabilities)
+        results.append({**parameters, **metrics})
+    return results
+
+
+def evaluate_boosted_hybrid_ablation(
+    train, test, columns, excluded_column, parameters
+):
+    ablation_columns = [column for column in columns if column != excluded_column]
+    model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("boosted", HistGradientBoostingClassifier(**parameters)),
+        ]
+    )
+    model.fit(train[ablation_columns], train["target"])
+    probabilities = model.predict_proba(test[ablation_columns])[:, 1]
+    metrics = evaluate_predictions(test["target"], probabilities)
+    season_metrics = evaluate_predictions_by_season(
+        test["target"], pd.Series(probabilities, index=test.index), test["season"]
+    )
+    return {"metrics": metrics, "by_season": season_metrics}
+
+
 def evaluate_predictions_by_season(target, probabilities, seasons):
     values = pd.DataFrame(
         {
@@ -222,6 +313,230 @@ def evaluate_predictions(target, probabilities):
     }
 
 
+def summarize_feature_importance(model, columns, top_n=10, X=None, y=None):
+    """Summarize a model's relative feature importance for interpretability.
+
+    For tree ensembles without a native feature_importances_ attribute (for
+    example HistGradientBoostingClassifier), permutation importance is used on
+    the provided training or validation data when available. Scores are normalized
+    to sum to 1 and ranked from most to least important.
+    """
+    if not columns:
+        raise ValueError("No feature columns are available to summarize.")
+
+    fitted_model = model.named_steps[model.steps[-1][0]] if hasattr(model, "named_steps") else model
+    if hasattr(fitted_model, "feature_importances_"):
+        importances = np.asarray(fitted_model.feature_importances_, dtype=float)
+    elif hasattr(fitted_model, "coef_"):
+        coefficients = np.asarray(fitted_model.coef_, dtype=float)
+        if coefficients.ndim == 1:
+            importances = np.abs(coefficients)
+        else:
+            importances = np.abs(coefficients).mean(axis=0)
+    elif X is not None and y is not None:
+        from sklearn.inspection import permutation_importance
+
+        scores = permutation_importance(
+            model,
+            X,
+            y,
+            n_repeats=5,
+            random_state=42,
+            scoring="neg_log_loss",
+        )
+        importances = np.abs(np.asarray(scores.importances_mean, dtype=float))
+    else:
+        raise ValueError("Model does not expose a usable feature-importance signal.")
+
+    if importances.shape[0] != len(columns):
+        raise ValueError(
+            f"Feature importance length ({importances.shape[0]}) does not match "
+            f"the number of provided columns ({len(columns)})."
+        )
+
+    total_importance = float(np.sum(importances))
+    if total_importance <= 0:
+        importances = np.ones(len(columns), dtype=float)
+        total_importance = float(np.sum(importances))
+
+    ranked = sorted(
+        zip(columns, importances / total_importance),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    ranked = ranked[:top_n]
+    return [
+        {
+            "rank": index + 1,
+            "feature": feature,
+            "importance": float(score),
+        }
+        for index, (feature, score) in enumerate(ranked)
+    ]
+
+
+def evaluate_calibration(target, probabilities, bin_count=10):
+    """Calculate expected calibration error on a prediction holdout.
+
+    Bins are fixed before inspecting outcomes, and empty bins are ignored.
+    This is a descriptive holdout diagnostic; it does not tune predictions.
+    """
+    values = pd.DataFrame(
+        {"target": target.to_numpy(), "probability": probabilities.to_numpy()}
+    )
+    values["bin"] = pd.cut(
+        values["probability"],
+        bins=[index / bin_count for index in range(bin_count + 1)],
+        include_lowest=True,
+        labels=False,
+    )
+    grouped = values.groupby("bin", observed=True)
+    calibration_error = 0.0
+    for _, bin_values in grouped:
+        weight = len(bin_values) / len(values)
+        calibration_error += weight * abs(
+            bin_values["target"].mean() - bin_values["probability"].mean()
+        )
+    return {
+        "expected_calibration_error": float(calibration_error),
+        "bins": bin_count,
+        "games": int(len(values)),
+    }
+
+
+def evaluate_calibration_by_group(
+    target, probabilities, groups, bin_count=10, minimum_games=100
+):
+    values = pd.DataFrame(
+        {
+            "target": target.to_numpy(),
+            "probability": probabilities.to_numpy(),
+            "group": groups.to_numpy(),
+        }
+    )
+    results = {}
+    for group, group_values in values.groupby("group", sort=True):
+        group_key = str(group)
+        games = int(len(group_values))
+        if games < minimum_games:
+            results[group_key] = {
+                "status": "insufficient_sample",
+                "games": games,
+                "minimum_games": minimum_games,
+            }
+            continue
+        calibration = evaluate_calibration(
+            group_values["target"],
+            group_values["probability"],
+            bin_count=bin_count,
+        )
+        calibration["status"] = "evaluated"
+        calibration["minimum_games"] = minimum_games
+        results[group_key] = calibration
+    return results
+
+
+def fit_calibrated_boosted_hybrid(train, test, columns, parameters, validation_fraction=0.2):
+    validation_split = int(len(train) * (1 - validation_fraction))
+    calibration_train = train.iloc[:validation_split]
+    calibration_validation = train.iloc[validation_split:]
+    base_model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("boosted", HistGradientBoostingClassifier(**parameters)),
+        ]
+    )
+    base_model.fit(calibration_train[columns], calibration_train["target"])
+    validation_probabilities = base_model.predict_proba(
+        calibration_validation[columns]
+    )[:, 1]
+    calibrator = SigmoidProbabilityCalibrator().fit(
+        validation_probabilities, calibration_validation["target"]
+    )
+    base_model.fit(train[columns], train["target"])
+    calibrated_model = CalibratedProbabilityModel(base_model, calibrator)
+    holdout_probabilities = calibrated_model.predict_proba(test[columns])[:, 1]
+    return calibrated_model, evaluate_predictions(test["target"], holdout_probabilities)
+
+
+def compare_calibration_methods(
+    train, test, columns, parameters, validation_fraction=0.2
+):
+    validation_split = int(len(train) * (1 - validation_fraction))
+    calibration_train = train.iloc[:validation_split]
+    calibration_validation = train.iloc[validation_split:]
+    base_model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("boosted", HistGradientBoostingClassifier(**parameters)),
+        ]
+    )
+    base_model.fit(calibration_train[columns], calibration_train["target"])
+    validation_probabilities = base_model.predict_proba(
+        calibration_validation[columns]
+    )[:, 1]
+    calibrators = {
+        "sigmoid": SigmoidProbabilityCalibrator(),
+        "isotonic": IsotonicProbabilityCalibrator(),
+    }
+    validation_metrics = {}
+    for name, calibrator in calibrators.items():
+        calibrator.fit(validation_probabilities, calibration_validation["target"])
+        calibrated = calibrator.predict_proba(validation_probabilities)
+        validation_metrics[name] = evaluate_predictions(
+            calibration_validation["target"], calibrated
+        )
+    selected_method = min(
+        validation_metrics, key=lambda name: validation_metrics[name]["log_loss"]
+    )
+    base_model.fit(train[columns], train["target"])
+    selected_model = CalibratedProbabilityModel(
+        base_model, calibrators[selected_method]
+    )
+    holdout_probabilities = selected_model.predict_proba(test[columns])[:, 1]
+    return (
+        selected_model,
+        evaluate_predictions(test["target"], holdout_probabilities),
+        {
+            "selected_method": selected_method,
+            "validation_fraction": validation_fraction,
+            "validation_metrics": validation_metrics,
+        },
+    )
+
+
+def tune_hybrid_logistic(train, test, columns, c_values=None):
+    """Search a compact logistic regularization grid for the hybrid feature set.
+
+    The search is still leakage-safe because it is constrained to the training split,
+    while the test set remains untouched for the final chronological holdout.
+    """
+    if c_values is None:
+        c_values = [0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0]
+
+    best_model = None
+    best_c = None
+    best_metrics = None
+
+    for c_value in c_values:
+        model = Pipeline(
+            [
+                ("impute", SimpleImputer(strategy="median")),
+                ("scale", StandardScaler()),
+                ("logistic", LogisticRegression(max_iter=2000, C=c_value)),
+            ]
+        )
+        model.fit(train[columns], train["target"])
+        probabilities = model.predict_proba(test[columns])[:, 1]
+        metrics = evaluate_predictions(test["target"], probabilities)
+        if best_metrics is None or metrics["log_loss"] < best_metrics["log_loss"]:
+            best_model = model
+            best_c = c_value
+            best_metrics = metrics
+
+    return best_model, best_c, best_metrics
+
+
 def select_recommended_model(metrics, candidates=None, ranking_metric="log_loss"):
     """Pick the best-performing candidate model on the chronological holdout.
 
@@ -241,12 +556,14 @@ def select_recommended_model(metrics, candidates=None, ranking_metric="log_loss"
 def main():
     features = pd.read_csv(FEATURES_PATH)
     games, predictor_columns = build_game_dataset(features)
+    games = add_elo_rating_deltas(games)
     candidate_predictor_columns = predictor_columns
     baseline_predictor_columns = [
         column
         for column in predictor_columns
         if not column.startswith("player_")
     ]
+    hybrid_predictor_columns = candidate_predictor_columns + ["elo_delta"]
     games["season"] = pd.to_datetime(games["gameDateTimeEst"]).dt.year - (
         pd.to_datetime(games["gameDateTimeEst"]).dt.month < 10
     )
@@ -270,6 +587,72 @@ def main():
         ]
     )
     candidate_model.fit(train[candidate_predictor_columns], train["target"])
+    hybrid_model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler()),
+            ("logistic", LogisticRegression(max_iter=1000)),
+        ]
+    )
+    hybrid_model.fit(train[hybrid_predictor_columns], train["target"])
+    boosted_hybrid_results = evaluate_boosted_hybrid_parameter_grid(
+        train, test, hybrid_predictor_columns
+    )
+    best_boosted_parameters = min(
+        boosted_hybrid_results, key=lambda values: values["log_loss"]
+    )
+    boosted_hybrid_ablation = evaluate_boosted_hybrid_ablation(
+        train,
+        test,
+        hybrid_predictor_columns,
+        "win_rate_rolling_10",
+        {
+            "max_depth": best_boosted_parameters["max_depth"],
+            "learning_rate": best_boosted_parameters["learning_rate"],
+            "max_iter": best_boosted_parameters["max_iter"],
+            "random_state": best_boosted_parameters["random_state"],
+        },
+    )
+    boosted_hybrid_model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            (
+                "boosted",
+                HistGradientBoostingClassifier(
+                    max_depth=best_boosted_parameters["max_depth"],
+                    learning_rate=best_boosted_parameters["learning_rate"],
+                    max_iter=best_boosted_parameters["max_iter"],
+                    random_state=best_boosted_parameters["random_state"],
+                ),
+            ),
+        ]
+    )
+    boosted_hybrid_model.fit(train[hybrid_predictor_columns], train["target"])
+    boosted_hybrid_feature_importance = summarize_feature_importance(
+        boosted_hybrid_model,
+        hybrid_predictor_columns,
+        top_n=10,
+        X=train[hybrid_predictor_columns],
+        y=train["target"],
+    )
+    (
+        calibrated_boosted_hybrid_model,
+        calibrated_boosted_metrics,
+        calibration_selection,
+    ) = compare_calibration_methods(
+        train,
+        test,
+        hybrid_predictor_columns,
+        {
+            "max_depth": best_boosted_parameters["max_depth"],
+            "learning_rate": best_boosted_parameters["learning_rate"],
+            "max_iter": best_boosted_parameters["max_iter"],
+            "random_state": best_boosted_parameters["random_state"],
+        },
+    )
+    tuned_hybrid_model, tuned_c, tuned_metrics = tune_hybrid_logistic(
+        train, test, hybrid_predictor_columns
+    )
 
     home_rate = train["target"].mean()
     predictions = {
@@ -282,12 +665,42 @@ def main():
             candidate_model.predict_proba(test[candidate_predictor_columns])[:, 1],
             index=test.index,
         ),
+        "elo_augmented_logistic": pd.Series(
+            hybrid_model.predict_proba(test[hybrid_predictor_columns])[:, 1],
+            index=test.index,
+        ),
+        "elo_augmented_logistic_tuned": pd.Series(
+            tuned_hybrid_model.predict_proba(test[hybrid_predictor_columns])[:, 1],
+            index=test.index,
+        ),
+        "boosted_hybrid": pd.Series(
+            boosted_hybrid_model.predict_proba(test[hybrid_predictor_columns])[:, 1],
+            index=test.index,
+        ),
+        "calibrated_boosted_hybrid": pd.Series(
+            calibrated_boosted_hybrid_model.predict_proba(
+                test[hybrid_predictor_columns]
+            )[:, 1],
+            index=test.index,
+        ),
     }
     metrics = {
         name: evaluate_predictions(test["target"], probabilities)
         for name, probabilities in predictions.items()
     }
     metrics["elo"] = evaluate_elo(games, split)
+    metrics["elo_augmented_logistic_tuned"] = tuned_metrics
+    metrics["calibrated_boosted_hybrid"] = calibrated_boosted_metrics
+    calibration = {
+        name: evaluate_calibration(test["target"], probabilities)
+        for name, probabilities in predictions.items()
+        if name in {"boosted_hybrid", "calibrated_boosted_hybrid"}
+    }
+    elo_predictions = elo_test_predictions(games, split)
+    elo_probabilities = pd.Series(
+        elo_predictions["probability"].to_numpy(), index=test.index
+    )
+    calibration["elo"] = evaluate_calibration(test["target"], elo_probabilities)
     elo_season_metrics = evaluate_elo_by_season(games, split)
     elo_parameter_sensitivity = evaluate_elo_parameter_grid(games, split)
     rolling_season_metrics = evaluate_predictions_by_season(
@@ -295,6 +708,33 @@ def main():
         predictions["rolling_logistic"],
         test["season"],
     )
+    boosted_hybrid_season_metrics = evaluate_predictions_by_season(
+        test["target"],
+        predictions["boosted_hybrid"],
+        test["season"],
+    )
+    calibrated_boosted_season_metrics = evaluate_predictions_by_season(
+        test["target"],
+        predictions["calibrated_boosted_hybrid"],
+        test["season"],
+    )
+    calibration_by_season = {
+        "boosted_hybrid": evaluate_calibration_by_group(
+            test["target"],
+            predictions["boosted_hybrid"],
+            test["season"],
+        ),
+        "calibrated_boosted_hybrid": evaluate_calibration_by_group(
+            test["target"],
+            predictions["calibrated_boosted_hybrid"],
+            test["season"],
+        ),
+        "elo": evaluate_calibration_by_group(
+            test["target"],
+            elo_probabilities,
+            test["season"],
+        ),
+    }
     recommended_model = select_recommended_model(metrics)
     metadata = {
         "feature_rows": len(features),
@@ -305,7 +745,30 @@ def main():
         "split_start": test["gameDateTimeEst"].iloc[0],
         "predictors": baseline_predictor_columns,
         "candidate_predictors": candidate_predictor_columns,
-        "saved_model": "player_history_logistic",
+        "hybrid_predictors": hybrid_predictor_columns,
+        "tuned_hybrid_model": {
+            "candidate_c_values": [0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0],
+            "selected_c": tuned_c,
+            "selected_metric": "log_loss",
+        },
+        "boosted_hybrid_model": {
+            "max_depth": best_boosted_parameters["max_depth"],
+            "learning_rate": best_boosted_parameters["learning_rate"],
+            "max_iter": best_boosted_parameters["max_iter"],
+            "random_state": best_boosted_parameters["random_state"],
+        },
+        "boosted_hybrid_parameter_sensitivity": boosted_hybrid_results,
+        "boosted_hybrid_win_rate_ablation": boosted_hybrid_ablation,
+        "feature_importance": {
+            "model": "boosted_hybrid",
+            "top_n": 10,
+            "features": boosted_hybrid_feature_importance,
+        },
+        "calibrated_boosted_hybrid": {
+            **calibration_selection,
+            "selection_metric": "log_loss",
+        },
+        "saved_model": "boosted_hybrid",
         "recommended_model": recommended_model,
         "recommendation_metric": "log_loss",
         "elo": {
@@ -314,15 +777,27 @@ def main():
             "home_advantage": ELO_HOME_ADVANTAGE,
         },
         "metrics": metrics,
+        "calibration": calibration,
+        "calibration_by_season": calibration_by_season,
         "elo_by_season": elo_season_metrics,
         "rolling_logistic_by_season": rolling_season_metrics,
+        "boosted_hybrid_by_season": boosted_hybrid_season_metrics,
+        "calibrated_boosted_hybrid_by_season": calibrated_boosted_season_metrics,
         "elo_parameter_sensitivity": elo_parameter_sensitivity,
     }
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    saved_model = (
+        calibrated_boosted_hybrid_model
+        if recommended_model == "calibrated_boosted_hybrid"
+        else boosted_hybrid_model
+    )
     with MODEL_PATH.open("wb") as output:
         pickle.dump(
-            {"model": candidate_model, "predictors": candidate_predictor_columns},
+            {
+                "model": saved_model,
+                "predictors": hybrid_predictor_columns,
+            },
             output,
         )
     METRICS_PATH.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.build_features import add_pregame_player_features
+from src.build_features import add_opponent_adjusted_win_rate, add_pregame_player_features
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +12,7 @@ DB_PATH = ROOT / "data" / "database" / "nba.db"
 FEATURES_PATH = ROOT / "data" / "processed" / "game_features.csv"
 PLAYER_FEATURE = "active_players_rolling_10"
 LAST_GAME_PLAYER_FEATURE = "active_players_last_game"
+WIN_RATE_FEATURE = "win_rate_rolling_10"
 
 STATS = [
     "teamScore",
@@ -79,7 +80,15 @@ def load_expected_features():
         )
 
     rolling_columns = [f"{stat}_rolling_10" for stat in STATS]
-    return source.dropna(subset=STATS + rolling_columns)
+    source[WIN_RATE_FEATURE] = (
+        source.groupby("teamId")["win"]
+        .transform(lambda values: values.shift(1).rolling(10, min_periods=5).mean())
+    )
+    return source.dropna(
+        subset=STATS
+        + rolling_columns
+        + [WIN_RATE_FEATURE]
+    )
 
 
 def test_generated_features_match_source_and_rolling_history():
@@ -112,6 +121,12 @@ def test_generated_features_match_source_and_rolling_history():
     np.testing.assert_allclose(
         actual["rest_days"].to_numpy(),
         expected["rest_days"].to_numpy(),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        actual[WIN_RATE_FEATURE].to_numpy(),
+        expected[WIN_RATE_FEATURE].to_numpy(),
         rtol=1e-12,
         atol=1e-12,
     )
@@ -182,3 +197,30 @@ def test_pregame_player_history_uses_only_previous_team_games():
     assert result["player_minutes_rolling_10"].iloc[1] == 200
     assert result["player_minutes_rolling_10"].iloc[2] == 205
     assert result["player_points_rolling_10"].iloc[2] == 105
+
+
+def test_opponent_adjusted_win_rate_uses_opponent_pregame_form():
+    games = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "teamId": 10,
+                "opponentTeamId": 20,
+                "win": 1,
+                "win_rate_rolling_10": 0.6,
+            },
+            {
+                "gameId": 1,
+                "teamId": 20,
+                "opponentTeamId": 10,
+                "win": 0,
+                "win_rate_rolling_10": 0.4,
+            },
+        ]
+    )
+
+    merged = add_opponent_adjusted_win_rate(games)
+
+    assert np.allclose(
+        merged["opponent_adjusted_win_rate_rolling_10"].to_numpy(), [0.2, -0.2]
+    )

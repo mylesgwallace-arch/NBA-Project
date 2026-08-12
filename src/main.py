@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import pickle
 from pathlib import Path
 
@@ -26,10 +27,10 @@ def load_model(model_path=MODEL_PATH):
     return model_bundle["model"], model_bundle["predictors"]
 
 
-def load_recommended_model_name(metrics_path=METRICS_PATH, default="player_history_logistic"):
+def load_recommended_model_name(metrics_path=METRICS_PATH, default="boosted_hybrid"):
     """Read which model the validated holdout comparison recommends.
 
-    Falls back to the logistic model name if no metrics file is present,
+    Falls back to the strongest current candidate if no metrics file is present,
     so the CLI still works before `train_baseline_model.py` has been run.
     """
     if not metrics_path.exists():
@@ -120,6 +121,54 @@ def predict_matchup_logistic(
     }
 
 
+def predict_matchup_boosted_hybrid(
+    home_team_id,
+    away_team_id,
+    game_date,
+    features,
+    model_path,
+    metrics_path=METRICS_PATH,
+):
+    model, predictor_columns = load_model(model_path)
+    home_row = lookup_last_team_row(features, home_team_id, game_date)
+    away_row = lookup_last_team_row(features, away_team_id, game_date)
+    non_elo_columns = [column for column in predictor_columns if column != "elo_delta"]
+    prediction_frame = build_prediction_row(home_row, away_row, non_elo_columns)
+
+    if "elo_delta" in predictor_columns:
+        games, _ = build_game_dataset(features)
+        games["gameDateTimeEst"] = pd.to_datetime(games["gameDateTimeEst"])
+        cutoff = pd.Timestamp(game_date) if game_date is not None else None
+        try:
+            elo_config = load_elo_config(metrics_path)
+        except FileNotFoundError:
+            elo_config = {"initial_rating": 1500.0, "k_factor": 20.0, "home_advantage": 65.0}
+
+        ratings, seen_teams = compute_elo_ratings_as_of(
+            games,
+            cutoff=cutoff,
+            initial_rating=elo_config["initial_rating"],
+            k_factor=elo_config["k_factor"],
+            home_advantage=elo_config["home_advantage"],
+        )
+        for team_id in (home_team_id, away_team_id):
+            if team_id not in seen_teams:
+                cutoff_message = f" on or before {game_date}" if game_date else ""
+                raise ValueError(
+                    f"No completed games found for teamId={team_id}{cutoff_message}; "
+                    "cannot compute an Elo rating."
+                )
+        prediction_frame["elo_delta"] = float(
+            ratings[home_team_id] - ratings[away_team_id] + elo_config["home_advantage"]
+        )
+
+    home_probability = float(model.predict_proba(prediction_frame)[0, 1])
+    return home_probability, {
+        "home": str(pd.Timestamp(home_row["gameDateTimeEst"]).date()),
+        "away": str(pd.Timestamp(away_row["gameDateTimeEst"]).date()),
+    }
+
+
 def predict_matchup_elo(
     home_team_id,
     away_team_id,
@@ -169,10 +218,15 @@ def predict_matchup(
         home_probability, feature_snapshot_date = predict_matchup_elo(
             home_team_id, away_team_id, game_date, features, metrics_path
         )
+    elif recommended_model in {"boosted_hybrid", "calibrated_boosted_hybrid"}:
+        home_probability, feature_snapshot_date = predict_matchup_boosted_hybrid(
+            home_team_id, away_team_id, game_date, features, model_path, metrics_path
+        )
     else:
         home_probability, feature_snapshot_date = predict_matchup_logistic(
             home_team_id, away_team_id, game_date, features, model_path
         )
+    validate_prediction_probability(home_probability)
     away_probability = 1.0 - home_probability
 
     result = {
@@ -187,6 +241,13 @@ def predict_matchup(
     if feature_snapshot_date is not None:
         result["feature_snapshot_date"] = feature_snapshot_date
     return result
+
+
+def validate_prediction_probability(home_probability):
+    if not math.isfinite(home_probability) or not 0.0 <= home_probability <= 1.0:
+        raise ValueError(
+            f"Model returned invalid home win probability: {home_probability!r}."
+        )
 
 
 def parse_args(argv=None):

@@ -1,14 +1,25 @@
 import math
 
+import numpy as np
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
 
 from src.train_baseline_model import (
+    add_elo_rating_deltas,
     build_game_dataset,
+    compare_calibration_methods,
     elo_win_probability,
+    evaluate_boosted_hybrid_ablation,
+    evaluate_boosted_hybrid_parameter_grid,
+    evaluate_calibration,
+    evaluate_calibration_by_group,
     evaluate_elo,
     evaluate_elo_by_season,
     select_recommended_model,
+    summarize_feature_importance,
+    tune_hybrid_logistic,
 )
+from src.model_calibration import CalibratedProbabilityModel
 
 
 def test_game_dataset_pairs_home_and_away_rows_without_current_game_metrics():
@@ -206,3 +217,190 @@ def test_select_recommended_model_excludes_trivial_home_win_rate_baseline():
     }
 
     assert select_recommended_model(metrics) == "rolling_logistic"
+
+
+def test_add_elo_rating_deltas_tracks_pregame_strength_gap():
+    games = pd.DataFrame(
+        [
+            {"gameId": 1, "homeTeamId": 10, "awayTeamId": 20, "target": 1},
+            {"gameId": 2, "homeTeamId": 20, "awayTeamId": 10, "target": 0},
+        ]
+    )
+
+    rows = add_elo_rating_deltas(games, initial_rating=1500, k_factor=20, home_advantage=65)
+
+    assert abs(rows.loc[0, "elo_delta"] - 65.0) < 1e-9
+    assert abs(rows.loc[0, "elo_probability"] - elo_win_probability(1500, 1500, 65)) < 1e-9
+    expected_second_delta = (
+        (1500 + 20 * (0 - (1 - elo_win_probability(1500, 1500, 65))) )
+        - (1500 + 20 * (1 - elo_win_probability(1500, 1500, 65)))
+        + 65
+    )
+    assert abs(rows.loc[1, "elo_delta"] - expected_second_delta) < 1e-6
+
+
+def test_tune_hybrid_logistic_returns_valid_grid_metrics():
+    train = pd.DataFrame(
+        {
+            "target": [0, 1, 0, 1, 1, 0],
+            "elo_delta": [-3.0, -2.0, -1.0, 1.0, 2.0, 3.0],
+        }
+    )
+    test = pd.DataFrame(
+        {
+            "target": [0, 1, 1, 0],
+            "elo_delta": [-4.0, -1.5, 1.5, 4.0],
+        }
+    )
+
+    model, c_value, metrics = tune_hybrid_logistic(
+        train, test, ["elo_delta"], c_values=[0.01, 1.0]
+    )
+
+    assert model is not None
+    assert c_value in {0.01, 1.0}
+    assert set(metrics) == {"accuracy", "log_loss", "brier_score"}
+
+
+def test_summarize_feature_importance_ranks_predictive_features():
+    train = pd.DataFrame(
+        {
+            "target": [0, 0, 0, 0, 1, 1, 1, 1],
+            "strong_signal": [0.1, 0.2, 0.3, 0.4, 1.4, 1.5, 1.6, 1.8],
+            "weak_signal": [0.6, 0.7, 0.5, 0.9, 0.8, 0.4, 0.5, 0.7],
+        }
+    )
+    model = LogisticRegression(max_iter=2000)
+    model.fit(train[["strong_signal", "weak_signal"]], train["target"])
+
+    features = summarize_feature_importance(
+        model,
+        ["strong_signal", "weak_signal"],
+        top_n=2,
+    )
+
+    assert len(features) == 2
+    assert features[0]["feature"] == "strong_signal"
+    assert features[0]["importance"] >= features[1]["importance"]
+    assert abs(sum(item["importance"] for item in features) - 1.0) < 1e-9
+
+
+def test_evaluate_boosted_hybrid_parameter_grid_returns_metrics():
+    train = pd.DataFrame(
+        {
+            "target": [0, 1, 0, 1, 1, 0, 1, 0],
+            "elo_delta": [-2.0, -1.0, 0.0, 1.0, 2.0, -3.0, 3.0, -4.0],
+        }
+    )
+    test = pd.DataFrame(
+        {
+            "target": [0, 1, 0, 1],
+            "elo_delta": [-1.5, 0.5, 2.5, -2.5],
+        }
+    )
+
+    results = evaluate_boosted_hybrid_parameter_grid(train, test, ["elo_delta"])
+
+    assert len(results) == 4
+    assert all(set(result) >= {"max_depth", "learning_rate", "max_iter", "random_state", "accuracy", "log_loss", "brier_score"} for result in results)
+
+
+def test_evaluate_boosted_hybrid_ablation_excludes_requested_column():
+    train = pd.DataFrame(
+        {
+            "target": [0, 1, 0, 1, 1, 0, 1, 0],
+            "elo_delta": [-2.0, -1.0, 0.0, 1.0, 2.0, -3.0, 3.0, -4.0],
+            "win_rate_rolling_10": [0.2, 0.4, 0.5, 0.6, 0.7, 0.3, 0.8, 0.1],
+        }
+    )
+    test = train.iloc[:4].copy()
+    test["season"] = [2020, 2020, 2021, 2021]
+    train["season"] = 2020
+
+    result = evaluate_boosted_hybrid_ablation(
+        train,
+        test,
+        ["elo_delta", "win_rate_rolling_10"],
+        "win_rate_rolling_10",
+        {"max_depth": 3, "learning_rate": 0.05, "max_iter": 20, "random_state": 42},
+    )
+
+    assert set(result["metrics"]) == {"accuracy", "log_loss", "brier_score"}
+    assert set(result["by_season"]) == {"2020", "2021"}
+
+
+def test_evaluate_calibration_reports_expected_calibration_error():
+    target = pd.Series([0, 1, 0, 1])
+    probabilities = pd.Series([0.1, 0.9, 0.2, 0.8])
+
+    metrics = evaluate_calibration(target, probabilities, bin_count=2)
+
+    assert metrics["bins"] == 2
+    assert abs(metrics["expected_calibration_error"] - 0.15) < 1e-12
+    assert metrics["games"] == 4
+
+
+def test_evaluate_calibration_by_group_marks_small_groups_insufficient():
+    target = pd.Series([0, 1, 0, 1])
+    probabilities = pd.Series([0.1, 0.9, 0.2, 0.8])
+    groups = pd.Series(["early", "early", "late", "late"])
+
+    results = evaluate_calibration_by_group(
+        target, probabilities, groups, bin_count=2, minimum_games=3
+    )
+
+    assert results["early"]["status"] == "insufficient_sample"
+    assert results["early"]["games"] == 2
+
+
+def test_sigmoid_calibrated_model_returns_probability_pairs():
+    from src.train_baseline_model import fit_calibrated_boosted_hybrid
+
+    train = pd.DataFrame(
+        {
+            "target": [0, 1, 0, 1, 1, 0, 1, 0, 1, 0],
+            "elo_delta": [-4, -2, -1, 1, 2, 3, 4, -3, 3, -4],
+        }
+    )
+    test = pd.DataFrame({"target": [0, 1, 1, 0], "elo_delta": [-2, 1, 2, -1]})
+    parameters = {
+        "max_depth": 3,
+        "learning_rate": 0.05,
+        "max_iter": 20,
+        "random_state": 42,
+    }
+
+    model, metrics = fit_calibrated_boosted_hybrid(
+        train, test, ["elo_delta"], parameters, validation_fraction=0.2
+    )
+
+    assert isinstance(model, CalibratedProbabilityModel)
+    probabilities = model.predict_proba(test[["elo_delta"]])
+    assert probabilities.shape == (4, 2)
+    assert np.all((probabilities >= 0) & (probabilities <= 1))
+    assert set(metrics) == {"accuracy", "log_loss", "brier_score"}
+
+
+def test_compare_calibration_methods_selects_from_validation_metrics():
+    train = pd.DataFrame(
+        {
+            "target": [0, 1, 0, 1, 1, 0, 1, 0, 1, 0],
+            "elo_delta": [-4, -2, -1, 1, 2, 3, 4, -3, 3, -4],
+        }
+    )
+    test = pd.DataFrame({"target": [0, 1, 1, 0], "elo_delta": [-2, 1, 2, -1]})
+    parameters = {
+        "max_depth": 3,
+        "learning_rate": 0.05,
+        "max_iter": 20,
+        "random_state": 42,
+    }
+
+    model, metrics, selection = compare_calibration_methods(
+        train, test, ["elo_delta"], parameters, validation_fraction=0.2
+    )
+
+    assert isinstance(model, CalibratedProbabilityModel)
+    assert selection["selected_method"] in {"sigmoid", "isotonic"}
+    assert set(selection["validation_metrics"]) == {"sigmoid", "isotonic"}
+    assert set(metrics) == {"accuracy", "log_loss", "brier_score"}

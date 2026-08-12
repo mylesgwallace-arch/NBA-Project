@@ -195,7 +195,289 @@ built in `src/build_features.py`. Until a blended model is validated to beat pla
 Elo as the recommended/served model and keep player-impact projections gated as association
 diagnostics, per the existing roster-change validation notes above.
 
-## Engineering cleanup pass (2026-08-11)
+Implementation update (2026-08-11): the hybrid model comparison has been systematized into a
+small, leakage-safe tuning sweep. `src/train_baseline_model.py` now evaluates a compact grid
+of `HistGradientBoostingClassifier` settings on the chronological split, keeps the best
+holdout configuration, and saves both the selected parameters and the per-grid sensitivity
+results into `models/baseline_metrics.json`.
+
+Measured result (2026-08-11): the tuned boosted hybrid remains the best validated model on the
+real chronological holdout. The current sweep produces `boosted_hybrid` at accuracy 0.65077,
+log_loss 0.62597, and Brier score 0.21765, which is slightly better than plain `elo` at
+accuracy 0.64971, log_loss 0.62616, and Brier score 0.21812. The model-selection pipeline is
+now fully data-driven rather than using a single hand-picked configuration, and the CLI now
+serves the winning `boosted_hybrid` path when the metrics file is present.
+
+What now works: the baseline comparison evaluates a tuned nonlinear hybrid candidate in the same
+chronological pipeline used for `home_win_rate`, `rolling_logistic`, `player_history_logistic`,
+and `elo`, and the regression suite confirms the new feature remains compatible with the
+existing prediction interface. The CLI continues to serve the current best-performing model and
+keeps the fallback behavior for missing metrics intact.
+
+Exact next step: continue improving the richer hybrid path with a calibration check and
+additional explanatory feature engineering, while preserving the leakage-safe, chronological
+evaluation protocol that produced the current model win.
+
+Implementation update (2026-08-11): added `evaluate_calibration()` to
+`src/train_baseline_model.py` and persisted a 10-bin expected calibration error diagnostic
+for the served boosted hybrid and Elo comparator in `models/baseline_metrics.json`. This is
+an evaluation-only diagnostic; it does not tune against or alter the chronological holdout.
+
+Calibration result (2026-08-11): the boosted hybrid has expected calibration error 0.04867,
+versus 0.02749 for Elo. The boosted hybrid still wins log loss (0.62597 versus 0.62616) and
+Brier score (0.21765 versus 0.21812), but its probabilities are less well aligned by this
+10-bin ECE diagnostic. The boosted hybrid remains recommended because log loss is the
+declared selection metric, while calibration quality is now explicitly visible.
+
+What now works: the model comparison reports both predictive performance and a comparable
+holdout calibration diagnostic, the CLI remains operational, and all regression tests pass.
+
+Exact next step: evaluate a calibration layer fitted only on a training-period validation
+slice (for example, sigmoid calibration) and compare its untouched chronological holdout
+metrics against the current boosted hybrid. Do not use the final holdout to choose the
+calibration method.
+
+Implementation update (2026-08-11): completed that calibration milestone with a sigmoid
+probability calibrator fitted only on the final 20% of the training period, while the base
+boosted model is refit on the full training period before final holdout evaluation. The
+calibrated model is persisted through the dedicated reusable classes in
+`src/model_calibration.py`; the CLI dispatch now recognizes `calibrated_boosted_hybrid`.
+
+Measured result (2026-08-11): `calibrated_boosted_hybrid` improves the untouched holdout to
+accuracy 0.65257, log_loss 0.62119, and Brier score 0.21578, compared with the uncalibrated
+boosted hybrid at 0.65077, 0.62597, and 0.21765, and Elo at 0.64971, 0.62616, and 0.21812.
+The calibrated model is now the recommended and served model under the existing log-loss
+selection rule. The direct-script pickle loading path was also validated after moving the
+calibration classes out of `__main__`.
+
+What now works: the repository has a leakage-safe calibration layer, persisted calibration
+diagnostics, stable model serialization, and an end-to-end CLI path returning calibrated
+matchup probabilities. The full regression suite passes.
+
+Implementation update (2026-08-11): added season-level holdout metrics for the uncalibrated
+and sigmoid-calibrated boosted hybrid alongside the existing Elo season diagnostics. The
+comparison uses the same untouched final chronological test rows and does not select or
+refit calibration per season.
+
+Stability result (2026-08-11): the calibrated model improves log loss over Elo in most
+season slices, including 2014, 2015, 2019, 2020, 2022, 2024, and 2025; it is essentially
+tied in several other seasons and trails Elo in 2021. The aggregate improvement is therefore
+not isolated to one season, although the gains are modest and the 2021 regression means the
+calibrated model should continue to be monitored rather than treated as universally superior.
+
+What now works: the repository reports aggregate and season-level calibrated-model metrics,
+the calibrated model is persistently serialized and served by the CLI, and the full test
+suite remains green.
+
+Exact next step: add a persisted calibration reliability summary with minimum per-season
+sample checks, then consider a validation-driven calibration method comparison before
+expanding into additional player/team explanatory features.
+
+Implementation update (2026-08-11): added `evaluate_calibration_by_group()` and persisted
+`calibration_by_season` for the boosted hybrid, calibrated boosted hybrid, and Elo models.
+Each season now records its sample count, status, minimum required sample count, and ECE;
+the configured minimum is 100 games, so every current season slice is evaluated rather than
+silently summarized or dropped.
+
+Reliability result (2026-08-11): the calibrated boosted hybrid's aggregate ECE remains
+0.04867, with season ECE ranging from 0.02595 to 0.11371. It has lower season ECE than Elo
+in 2016, 2017, 2018, 2019, 2020, 2022, and 2024, while Elo is better in 2014, 2015, 2021,
+2023, and 2025. This confirms the calibration behavior varies by season even though the
+calibrated model remains the best aggregate log-loss model.
+
+What now works: calibration quality is persisted with explicit per-season sample validation,
+the full regression suite passes, and the real CLI continues to serve calibrated
+boosted-hybrid probabilities.
+
+Exact next step: compare sigmoid calibration with a second method fitted only on the same
+training-period validation slice, then select by validation log loss and evaluate once on the
+untouched chronological holdout.
+
+Implementation update (2026-08-11): added isotonic calibration and a validation-only method
+selector in `src/train_baseline_model.py`. Sigmoid and isotonic calibrators are both fitted
+from the same training-period validation predictions; the method with lower validation log
+loss is selected, after which the base boosted model is refit on all training rows and the
+selected calibrator is evaluated once on the untouched holdout.
+
+Measured result (2026-08-11): isotonic won the validation selection (log loss 0.59607 versus
+0.59908 for sigmoid). On the untouched holdout, the selected calibrated model achieves
+accuracy 0.65339, log_loss 0.62560, and Brier score 0.21632. Its aggregate ECE is 0.02195,
+better than Elo's 0.02749, although its log-loss gain over Elo is small (0.62560 versus
+0.62616). The calibrated boosted hybrid remains the recommended model, and the CLI serves
+it successfully.
+
+What now works: calibration method selection is validation-driven rather than chosen from
+the final holdout, both methods and their validation metrics are persisted, and the full
+regression suite remains green.
+
+Exact next step: perform a final model-risk review using season-level calibrated metrics and
+prediction edge cases, then decide whether to freeze this calibrated baseline before adding
+new player/team explanatory features.
+
+Implementation update (2026-08-11): completed the final baseline model-risk review by adding
+runtime validation that prediction probabilities are finite and within the closed interval
+[0, 1]. The review also exercised the real calibrated CLI path and the unknown-team error
+path, confirming invalid team inputs surface explicit errors rather than producing fallback
+probabilities.
+
+Risk-review result (2026-08-11): all season slices satisfy the configured reliability sample
+threshold, the calibrated model remains the selected holdout winner, normal CLI predictions
+return complementary probabilities that sum to one, and unknown team IDs fail clearly.
+The full regression suite passes with 39 tests.
+
+Baseline status: the calibrated boosted hybrid is now frozen as the current validated
+prediction baseline. It uses validation-only isotonic-versus-sigmoid selection, serves
+calibrated probabilities through the CLI, and remains subject to future retraining and
+revalidation when data or feature logic changes.
+
+Exact next step: begin the next analytical milestone by adding richer leakage-safe
+team/player explanatory features, comparing them against this frozen calibrated baseline
+under the same chronological and calibration evaluation protocol.
+
+Implementation update (2026-08-11): added the leakage-safe `win_rate_rolling_10` team feature
+to `src/build_features.py`. It is computed from each team's prior ten game outcomes using
+`shift(1)` before rolling, then automatically participates in the existing home-minus-away
+game dataset. The generated feature file was rebuilt from SQLite and remains 133,466 rows.
+
+Measured result (2026-08-11): the new feature changes the current holdout winner. The
+uncalibrated boosted hybrid now achieves accuracy 0.65227, log_loss 0.62554, and Brier score
+0.21745; the previous frozen calibrated path with the expanded feature set achieves 0.65197,
+0.62774, and 0.21618, while Elo remains 0.64971, 0.62616, and 0.21812. Under the declared
+log-loss rule, `boosted_hybrid` is now recommended and served. The persisted model bundle was
+fixed to save the same model named by `recommended_model`, preventing a recommendation/bundle
+mismatch when calibration is not selected.
+
+What now works: the new pregame team-form feature is generated and tested, the full suite
+passes with 39 tests, the model is retrained on the expanded feature set, and the CLI serves
+the selected uncalibrated boosted model successfully.
+
+Exact next step: run an explicit ablation comparison with and without `win_rate_rolling_10`,
+then retain the feature only if its contribution is stable across the season holdouts rather
+than relying on the aggregate split alone.
+
+Implementation update (2026-08-11): added an explicit boosted-hybrid ablation report for
+`win_rate_rolling_10`, using the selected tree configuration and the same chronological
+holdout. The report persists aggregate and season-level metrics in
+`boosted_hybrid_win_rate_ablation`.
+
+Ablation result (2026-08-11): retaining `win_rate_rolling_10` improves boosted-hybrid
+holdout log loss from 0.62610 to 0.62554, accuracy from 0.65242 to 0.65227 (a negligible
+threshold tradeoff), and Brier score from 0.21766 to 0.21745. Log loss improves in 10 of
+12 season slices and worsens only slightly in 2019 and 2024, so the feature is retained as
+a stable explanatory input rather than an aggregate-only optimization.
+
+What now works: the feature contribution is explicitly measured, the selected boosted
+model is retrained and persisted with the feature, the CLI returns valid predictions, and
+the full suite passes with 40 tests.
+
+Exact next step: add the next leakage-safe explanatory feature only after defining its
+ablation and season-stability checks up front; the current boosted hybrid and its feature
+ablation are the reference for that comparison.
+
+Implementation update (2026-08-11): evaluated a candidate
+`margin_volatility_rolling_10` feature based on the prior ten scoring margins, with the
+same pregame shift, aggregate ablation, and season-level stability checks. The candidate
+was rejected and removed from the generated feature set because it did not improve the
+retained model.
+
+Candidate result (2026-08-11): adding margin volatility produced boosted-hybrid log loss
+0.62558 versus 0.62554 without it, with accuracy 0.65189 versus 0.65227 and Brier score
+0.21745 versus 0.21745. It improved log loss in only 6 of 12 season slices, so it was not
+retained. The repository was rebuilt back to the validated win-rate feature set, and the
+full suite still passes with 40 tests.
+
+Exact next step: define and evaluate a stronger opponent-adjusted team-form feature, using
+the same ablation and season-stability gate before it can modify the retained boosted
+baseline.
+
+Implementation update (2026-08-11): evaluated an opponent-adjusted form feature defined as
+each team's prior-ten-game win rate minus its opponent's prior-ten-game win rate for the
+same game. The lookup was implemented with indexed pregame values and tested for row-count
+preservation; games without an opponent history remain present with a missing value for the
+existing model imputer.
+
+Candidate result (2026-08-11): the feature was rejected. It produced log loss 0.625541
+versus 0.625540 without it, identical accuracy 0.65227, and a marginally worse Brier score
+0.217453 versus 0.217452. It improved log loss in only 6 of 12 season slices, so it did not
+meet the stability gate and was removed from the generated feature set.
+
+What now works: the retained rolling-win-rate feature set is restored, the full suite passes
+with 40 tests, the feature dataset remains 133,466 rows, and the boosted hybrid CLI path
+continues to return valid predictions.
+
+Exact next step: pause speculative feature additions and perform a targeted review of the
+existing player-availability and player-history signals for a feature with a stronger
+causal or explanatory rationale before another ablation is attempted.
+
+Implementation update (2026-08-11): reviewed the existing player-history signals and tested
+a pregame player scoring-efficiency feature, `player_points_per_minute_rolling_10`, derived
+from prior player points divided by prior player minutes. Zero-minute denominators were
+handled as missing values for the existing imputer.
+
+Candidate result (2026-08-11): the player-efficiency feature was rejected. It changed
+boosted-hybrid log loss from 0.62554 to 0.62557, Brier score from 0.21745 to 0.21748,
+and improved log loss in only 5 of 12 season slices despite a small accuracy increase.
+The feature was removed and the validated rolling-win-rate feature set was rebuilt.
+
+What now works: the retained feature dataset is restored at 133,466 rows, the full suite
+passes with 40 tests, the boosted hybrid remains the selected model at accuracy 0.65227
+and log loss 0.62554, and the CLI remains operational.
+
+Exact next step: stop adding weak derived predictors and prioritize a model-interpretability
+and feature-importance report for the retained boosted baseline before making another
+feature change.
+
+Implementation update (2026-08-11): built a minimal interactive prediction interface at
+`src/interactive_predict.py`, per explicit user request. It adds no new modeling
+functionality — it is a thin wrapper around the existing, validated `predict_matchup()`
+from `src/main.py`. It loads the 30 current NBA franchise names from the `team_histories`
+table (filtered to the fixed NBA franchise teamId range and `seasonActiveTill >= 2100`),
+lets the user pick a home team and an away team by number from a printed list, optionally
+enter a game-date cutoff, and then prints the same home/away win probabilities and
+predicted-favorite label the CLI already produces.
+
+Validated current behavior (2026-08-11):
+- `./.venv/Scripts/python -m pytest tests/test_interactive_predict.py -q` -> `1 passed`,
+  covering that `load_current_teams()` returns exactly the current-franchise rows (filtering
+  out historical relocated entries and non-NBA international/exhibition teams from the same
+  table).
+- `./.venv/Scripts/python -m pytest -q` -> `41 passed` (40 previously existing plus the new
+  interactive-interface test), confirming no regression.
+- End-to-end manual run with piped input (`5`, `25`, `2026-04-12`) selected the Chicago Bulls
+  as home and Portland Trail Blazers as away, and returned a real `boosted_hybrid` prediction
+  (35.0% / 65.0%) with a favorite label, matching the existing CLI's model output for the same
+  inputs.
+- Confirmed the no-date path falls back to the latest available pregame data, and that
+  selecting the same team for both home and away is explicitly rejected with a clear message
+  before any prediction call is attempted.
+
+What now works: a user can get a prediction by choosing two teams by name from a numbered
+list, with no need to know numeric team IDs or touch the CLI flags directly. No model,
+feature, or selection-logic changes were made; `models/baseline_metrics.json` and
+`models/baseline_logistic.pkl` are untouched by this work.
+
+Exact next step: resume the model-interpretability/feature-importance milestone for the
+retained boosted baseline that was deferred to build this interface.
+
+Implementation update (2026-08-12): added `summarize_feature_importance()` to
+`src/train_baseline_model.py` and persisted a normalized top-10 feature-importance report in
+`models/baseline_metrics.json`. The helper uses native feature importances when available,
+coefficient magnitudes for linear models, and permutation importance for tree ensembles like
+`HistGradientBoostingClassifier`, so the retained boosted hybrid now carries an explanation
+report instead of an opaque model-only artifact.
+
+What now works: the model metrics file includes a ranked `feature_importance` section with the
+current strongest predictors (for example, `elo_delta` is the dominant signal for the boosted
+hybrid), the feature-importance logic is covered by a focused regression test, and the training
+script still writes the baseline metrics and pickles successfully.
+
+Validation: `./.venv/Scripts/python -m pytest tests/test_baseline_model.py -q` -> `16 passed`,
+and `./.venv/Scripts/python src/train_baseline_model.py` completes successfully while writing
+`models/baseline_metrics.json` with the persisted feature report.
+
+Exact next step: use this feature-importance report to decide whether a new leakage-safe
+team/player feature is worth the expected ablation and season-stability review before expanding
+the retained model further.
 
 A full repository audit was performed and its findings were used as the source
 of truth for a follow-up engineering cleanup pass. No modeling methodology or
