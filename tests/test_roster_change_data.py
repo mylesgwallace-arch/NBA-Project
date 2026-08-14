@@ -228,6 +228,42 @@ def test_player_movement_summary_matches_real_raw_source_counts_and_date_coverag
     }
 
 
+def test_roster_events_include_confidence_metadata_and_high_confidence_summary():
+    events = pd.DataFrame(
+        [
+            {
+                "event_id": "high-1",
+                "event_timestamp": "2024-10-01T15:00:00-04:00",
+                "team_id": 10,
+                "person_id": 100,
+                "change_type": "add",
+                "source": "independent source",
+                "source_url": "https://example.test/high-1",
+                "confidence_level": "high",
+                "reconstruction_rule": "signing_add",
+            },
+            {
+                "event_id": "low-1",
+                "event_timestamp": "2024-10-02T15:00:00-04:00",
+                "team_id": 20,
+                "person_id": 200,
+                "change_type": "add",
+                "source": "independent source",
+                "source_url": "https://example.test/low-1",
+                "confidence_level": "low",
+                "reconstruction_rule": "fallback_add",
+            },
+        ]
+    )
+
+    validated = validate_roster_change_events(events)
+    summary = summarize_roster_change_events(validated)
+
+    assert validated["confidence_level"].tolist() == ["high", "low"]
+    assert summary["confidence_level_counts"] == {"high": 1, "low": 1}
+    assert summary["high_confidence_event_count"] == 1
+
+
 def test_basketball_reference_add_event_is_resolved_to_repo_ids():
     from bs4 import BeautifulSoup
 

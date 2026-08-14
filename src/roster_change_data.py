@@ -19,6 +19,7 @@ ROSTER_CHANGE_COLUMNS = [
     "source_url",
 ]
 CHANGE_TYPES = {"add", "remove"}
+CONFIDENCE_LEVELS = {"high", "medium", "low", "excluded"}
 PLAYER_MOVEMENT_COLUMNS = [
     "transaction_type",
     "transaction_date",
@@ -706,6 +707,19 @@ def validate_roster_change_events(events):
     if ~result["source_url"].str.startswith(("http://", "https://")).all():
         raise ValueError("source_url must use http:// or https://")
 
+    if "confidence_level" in events.columns:
+        result["confidence_level"] = events["confidence_level"].astype("string").str.strip().str.lower()
+        if result["confidence_level"].isna().any() or (result["confidence_level"] == "").any():
+            raise ValueError("confidence_level must contain non-empty values when supplied")
+        invalid = ~result["confidence_level"].isin(CONFIDENCE_LEVELS)
+        if invalid.any():
+            raise ValueError(
+                "confidence_level must be one of: " + ", ".join(sorted(CONFIDENCE_LEVELS))
+            )
+
+    if "reconstruction_rule" in events.columns:
+        result["reconstruction_rule"] = events["reconstruction_rule"].astype("string").str.strip()
+
     return result.sort_values(["event_timestamp", "event_id"]).reset_index(drop=True)
 
 
@@ -731,6 +745,14 @@ def summarize_roster_change_events(events):
         "first_event_timestamp": frame["event_timestamp"].min().isoformat(),
         "last_event_timestamp": frame["event_timestamp"].max().isoformat(),
     }
+    if "confidence_level" in frame.columns:
+        summary["confidence_level_counts"] = {
+            key: int(value)
+            for key, value in frame["confidence_level"].value_counts().sort_index().to_dict().items()
+        }
+        summary["high_confidence_event_count"] = int(
+            (frame["confidence_level"] == "high").sum()
+        )
     return summary
 
 

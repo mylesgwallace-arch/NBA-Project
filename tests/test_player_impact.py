@@ -153,6 +153,56 @@ def test_main_validate_roster_events_mode_prints_summary(tmp_path, capsys):
     assert '"remove_count": 1' in captured.out
 
 
+def test_select_external_roster_change_appearances_uses_high_confidence_only():
+    values = pd.DataFrame(
+        [
+            {
+                "personId": 100,
+                "teamId": 10,
+                "gameId": 1,
+                "gameDateTimeEst": "2024-10-01T00:00:00Z",
+                "home": 1,
+                "current_team_net_rating": 5.0,
+                "prior_team_net_rating": 0.0,
+                "prior_opponent_net_rating": 0.0,
+                "prior_active_players": 7,
+                "prior_rotation_minutes": 200,
+                "prior_team_possessions": 90,
+                "player_signal": 1.5,
+            }
+        ]
+    )
+    events = pd.DataFrame(
+        [
+            {
+                "event_id": "high-1",
+                "event_timestamp": "2024-09-30T00:00:00Z",
+                "team_id": 10,
+                "person_id": 100,
+                "change_type": "add",
+                "source": "independent source",
+                "source_url": "https://example.test/high-1",
+                "confidence_level": "high",
+            },
+            {
+                "event_id": "low-1",
+                "event_timestamp": "2024-09-29T00:00:00Z",
+                "team_id": 10,
+                "person_id": 100,
+                "change_type": "add",
+                "source": "independent source",
+                "source_url": "https://example.test/low-1",
+                "confidence_level": "low",
+            },
+        ]
+    )
+
+    matched = _select_external_roster_change_appearances(values, events)
+
+    assert len(matched) == 1
+    assert matched.iloc[0]["external_event_id"] == "high-1"
+
+
 def test_main_person_id_mode_returns_descriptive_player_impact_summary(monkeypatch, tmp_path, capsys):
     db_path = tmp_path / "impact.db"
     connection = sqlite3.connect(db_path)

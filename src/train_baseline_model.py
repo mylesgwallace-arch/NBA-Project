@@ -462,7 +462,7 @@ def evaluate_opponent_form_experiment(features, parameters=None):
 
 def evaluate_player_efficiency_experiment(features, parameters=None):
     """Measure a player-efficiency feature against the same holdout.
-
+ 
     The experiment is deliberately descriptive and uses the same leakage-safe,
     chronological split as the rest of the baseline suite. It is only used to decide
     whether the new signal belongs in the explanatory or retained feature set.
@@ -524,6 +524,119 @@ def evaluate_player_efficiency_experiment(features, parameters=None):
             column
             for column in [candidate_feature]
             if column in candidate_columns
+        ],
+    }
+
+
+def add_player_context_features(features):
+    """Create roster-context player signals that stay within prior-game availability.
+
+    The raw player-history aggregate mixes team-level quality, rotation size, and
+    minutes allocation into a single signal. Dividing per-player totals by the
+    recent active-player count gives a more defensible representation of how much
+    the team relies on recent player usage while keeping the signal anchored in the
+    same pregame information set. This is still a descriptive diagnostic and not a
+    causal trade signal.
+    """
+    result = features.copy()
+    if "active_players_rolling_10" not in result.columns:
+        return result
+
+    active_players = pd.to_numeric(
+        result["active_players_rolling_10"], errors="coerce"
+    ).replace(0, np.nan)
+    for column in [
+        "player_minutes_rolling_10",
+        "player_points_rolling_10",
+        "player_assists_rolling_10",
+        "player_rebounds_rolling_10",
+    ]:
+        if column in result.columns:
+            result[f"{column}_per_active_player_rolling_10"] = (
+                pd.to_numeric(result[column], errors="coerce") / active_players
+            )
+    return result
+
+
+def evaluate_player_context_experiment(features, parameters=None):
+    """Measure whether roster-context player-share features improve the same holdout.
+
+    This is a narrower, more defensible version of the earlier raw player-history
+    candidate: it represents player availability in the context of the recent
+    rotation size rather than treating all player aggregate volume as a direct team
+    signal. The production model remains untouched unless this candidate materially
+    improves the same chronological holdout without leakage.
+    """
+    if parameters is None:
+        parameters = {
+            "max_depth": 4,
+            "learning_rate": 0.05,
+            "max_iter": 200,
+            "random_state": 42,
+        }
+
+    context_features = add_player_context_features(features)
+    candidate_features = [
+        column
+        for column in [
+            "player_minutes_rolling_10_per_active_player_rolling_10",
+            "player_points_rolling_10_per_active_player_rolling_10",
+            "player_assists_rolling_10_per_active_player_rolling_10",
+            "player_rebounds_rolling_10_per_active_player_rolling_10",
+        ]
+        if column in context_features.columns
+    ]
+    if not candidate_features:
+        raise ValueError("No roster-context player features were created.")
+
+    baseline_features = features.drop(columns=candidate_features, errors="ignore")
+    baseline_games, baseline_columns = build_game_dataset(baseline_features)
+    baseline_games = add_elo_rating_deltas(baseline_games)
+    baseline_columns = baseline_columns + ["elo_delta"]
+
+    candidate_games, candidate_columns = build_game_dataset(context_features)
+    candidate_games = add_elo_rating_deltas(candidate_games)
+    candidate_columns = candidate_columns + ["elo_delta"]
+
+    split = int(len(baseline_games) * (1 - TEST_FRACTION))
+    baseline_train = baseline_games.iloc[:split]
+    baseline_test = baseline_games.iloc[split:]
+    candidate_train = candidate_games.iloc[:split]
+    candidate_test = candidate_games.iloc[split:]
+
+    baseline_model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("boosted", HistGradientBoostingClassifier(**parameters)),
+        ]
+    )
+    baseline_model.fit(baseline_train[baseline_columns], baseline_train["target"])
+    baseline_probabilities = baseline_model.predict_proba(
+        baseline_test[baseline_columns]
+    )[:, 1]
+
+    candidate_model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("boosted", HistGradientBoostingClassifier(**parameters)),
+        ]
+    )
+    candidate_model.fit(candidate_train[candidate_columns], candidate_train["target"])
+    candidate_probabilities = candidate_model.predict_proba(
+        candidate_test[candidate_columns]
+    )[:, 1]
+
+    return {
+        "baseline": evaluate_predictions(baseline_test["target"], baseline_probabilities),
+        "with_player_context": evaluate_predictions(
+            candidate_test["target"], candidate_probabilities
+        ),
+        "baseline_columns": baseline_columns,
+        "candidate_columns": candidate_columns,
+        "candidate_feature_names": candidate_features,
+        "notes": [
+            "Player totals are normalized by recent active-player count to reflect roster context instead of assigning raw aggregate player volume directly to the team signal.",
+            "The feature remains pregame and uses only the same chronological information available before kickoff.",
         ],
     }
 

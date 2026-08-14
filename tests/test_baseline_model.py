@@ -7,6 +7,7 @@ from sklearn.linear_model import LogisticRegression
 from src.train_baseline_model import (
     add_elo_rating_deltas,
     add_opponent_form_features,
+    add_player_context_features,
     average_probability_predictions,
     build_game_dataset,
     compare_calibration_methods,
@@ -18,6 +19,7 @@ from src.train_baseline_model import (
     evaluate_elo,
     evaluate_elo_by_season,
     evaluate_opponent_form_experiment,
+    evaluate_player_context_experiment,
     evaluate_player_efficiency_experiment,
     select_recommended_model,
     summarize_feature_importance,
@@ -368,6 +370,44 @@ def test_evaluate_player_efficiency_experiment_reports_key_metrics():
 
     assert set(metrics) >= {"baseline", "with_player_efficiency"}
     assert "player_points_per_minute_rolling_10" in metrics["candidate_feature_names"]
+    assert set(metrics["baseline"]) >= {"accuracy", "log_loss", "brier_score"}
+
+
+def test_add_player_context_features_normalizes_player_volume_by_rotation_size():
+    features = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "teamId": 10,
+                "active_players_rolling_10": 5,
+                "player_minutes_rolling_10": 400,
+                "player_points_rolling_10": 120,
+                "player_assists_rolling_10": 24,
+            },
+            {
+                "gameId": 2,
+                "teamId": 20,
+                "active_players_rolling_10": 8,
+                "player_minutes_rolling_10": 640,
+                "player_points_rolling_10": 200,
+                "player_assists_rolling_10": 28,
+            },
+        ]
+    )
+
+    result = add_player_context_features(features)
+
+    assert result["player_minutes_rolling_10_per_active_player_rolling_10"].tolist() == [80.0, 80.0]
+    assert result["player_points_rolling_10_per_active_player_rolling_10"].tolist() == [24.0, 25.0]
+    assert result["player_assists_rolling_10_per_active_player_rolling_10"].tolist() == [4.8, 3.5]
+
+
+def test_evaluate_player_context_experiment_reports_key_metrics():
+    features = pd.read_csv("data/processed/game_features.csv")
+    metrics = evaluate_player_context_experiment(features)
+
+    assert set(metrics) >= {"baseline", "with_player_context"}
+    assert "player_minutes_rolling_10_per_active_player_rolling_10" in metrics["candidate_feature_names"]
     assert set(metrics["baseline"]) >= {"accuracy", "log_loss", "brier_score"}
 
 

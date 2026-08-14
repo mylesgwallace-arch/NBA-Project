@@ -139,8 +139,11 @@ an explanatory limitation rather than inventing a new predictive input.
 `src/player_impact.py --validate-roster-events PATH` and
 `src/roster_change_data.py --validate PATH` validate an independent roster-change
 CSV against the project contract and print a JSON summary with counts,
-team/person coverage, and the event time window. This is the pre-flight check
-before running `src/player_impact.py --roster-events PATH`.
+team/person coverage, and the event time window. When a source file includes a
+`confidence_level` column, the downstream benchmark automatically filters to the
+`high` subset so only the trusted event stream enters the descriptive impact
+check. This is the pre-flight check before running
+`src/player_impact.py --roster-events PATH`.
 `src/roster_change_data.py --normalize-player-movement data/raw/nba_player_movement_raw.csv`
 deterministically transforms the immutable raw movement extract into
 high-confidence `roster_change_events` plus a row-level audit CSV. The current

@@ -27,6 +27,45 @@ leakage-safe rest-interval predictor, and player-level prior-production features
 The player-impact association benchmark has now been repeated across four
 season-based holdouts.
 
+Validated continuation status (2026-08-14): the repository already contains a
+small, leakage-safe player-aware candidate evaluation path, but the production
+model remains unchanged. The candidate feature set is limited to prior team-context
+player-performance statistics with the same chronological split used for the
+baseline, and it is evaluated only as an experiment rather than a replacement for
+`elo_boosted_ensemble`. The default prediction path continues to be the validated
+holdout winner for the present feature set unless a candidate beats the same
+chronological evaluation on accuracy, log loss, and Brier score without temporal
+leakage.
+
+Actual holdout comparison (2026-08-14): the leakage-safe candidate
+`player_history_logistic` improves slightly over the pure rolling team baseline
+(accuracy 0.62721 vs 0.62661, log loss 0.64552 vs 0.64599, Brier 0.22656 vs
+0.22688), but it still trails the current production engine
+`elo_boosted_ensemble` (accuracy 0.65077, log loss 0.62277, Brier 0.21656) on the
+same test split. The model recommendation remains `elo_boosted_ensemble` and no
+replacement is justified without a stronger candidate.
+
+Rigorously tested next experiment (2026-08-14): a roster-context player feature
+set was added as a dedicated comparison in `src/train_baseline_model.py` and
+validated in `tests/test_baseline_model.py`. The features normalize recent
+player totals by the recent active-player count to capture the team's rotation
+context rather than treating raw aggregate player volume as a direct team signal.
+This is a more defensible representation because it reflects the pregame roster's
+available minutes and role allocation while remaining within the same chronology-safe
+information set. On the exact same holdout, the contextualized candidate scores
+`accuracy=0.65017`, `log_loss=0.62609`, and `brier_score=0.21777`, while the
+baseline against which it is measured scores `accuracy=0.65219`,
+`log_loss=0.62608`, and `brier_score=0.21774`. The candidate does not produce a
+material improvement over the current holdout or over the validated production
+engine; it therefore provides evidence that the missing signal is not a simple
+rotation-adjusted player-volume feature. No production model change is justified.
+
+Exact next step: preserve `elo_boosted_ensemble` as the production default, keep
+using the validated holdout comparison for any future player-aware proposals, and
+only revisit player modeling if a more defensible dataset or a stronger,
+team-aware, roster-aware feature set can show an actual improvement on the same
+chronological split with no leakage.
+
 Validated current state (2026-08-13): the repository remains in a stable,
 production-ready analytical state. The full project test suite passes and the
 current default prediction path is the validated holdout winner for the present
@@ -72,6 +111,28 @@ well-justified candidate materially improves the same chronological holdout. In 
 absence of that evidence, the next most valuable step is to build cleaner,
 user-facing explanatory output on top of the validated model rather than broadening
 into a new analytics subsystem.
+
+Benchmark result (2026-08-13): the normalized high-confidence roster-event output
+from `data/raw/nba_player_movement_raw.csv` was exercised through the existing
+association benchmark at `src/player_impact.py --roster-events
+data/processed/nba_player_movement_roster_change_events.csv`. The run evaluated
+4225 transition-player games across 2625 transition events, with
+`event_source` = `external_timestamped_additions`, `pregame_control_mae` = 12.7418,
+`candidate_mae` = 12.7604, and `improves_pregame_control` = `false`. The
+benchmark path now filters to `confidence_level == "high"` whenever that column is
+present, so the project consistently starts from the trusted subset only. That
+result matches the repository's current stance: the normalized event source is
+valid and audit-ready, but it does not provide a justified production-model signal
+and should remain a descriptive benchmark input only until some stronger,
+leakage-safe evidence appears.
+
+Implementation update (2026-08-13): the validated explanatory layer was
+hardened with CLI smoke tests for `src/main.py --summary` and
+`src/player_scenario.py` so the user-facing recommendation, calibration,
+single-player scenario readout, and top-feature output remain working without
+changing the production model. The project maintains the current validated
+prediction engine as the default and treats the summary/explanation path as a
+descriptive presentation layer rather than a new modeling signal.
 
 Current continuation status (2026-08-11): the historical NBA analytics foundation
 remains stable and validated. The repository now accepts a curated independent

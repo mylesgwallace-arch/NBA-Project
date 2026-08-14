@@ -491,6 +491,8 @@ def _evaluate_later_team_game_splits(values, validation_start_seasons):
 def _select_external_roster_change_appearances(values, roster_events):
     """Link validated addition events to the first later player appearance."""
     events = validate_roster_change_events(roster_events)
+    if "confidence_level" in events.columns:
+        events = events[events["confidence_level"] == "high"].copy()
     additions = events[events["change_type"] == "add"]
     values = values.copy()
     values["_appearance_timestamp"] = pd.to_datetime(
@@ -526,13 +528,16 @@ def _evaluate_roster_change_target(values, test_fraction, roster_events=None):
         event_source = "historical_team_id_transitions"
         ignored_removals = 0
     else:
+        validated_events = validate_roster_change_events(roster_events)
+        if "confidence_level" in validated_events.columns:
+            validated_events = validated_events[
+                validated_events["confidence_level"] == "high"
+            ].copy()
         transitions = _select_external_roster_change_appearances(
-            values, roster_events
+            values, validated_events
         )
         event_source = "external_timestamped_additions"
-        ignored_removals = int(
-            (validate_roster_change_events(roster_events)["change_type"] == "remove").sum()
-        )
+        ignored_removals = int((validated_events["change_type"] == "remove").sum())
     if transitions.empty:
         return {
             "status": "insufficient_roster_change_data",

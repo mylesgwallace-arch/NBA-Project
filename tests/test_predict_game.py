@@ -170,6 +170,73 @@ def test_build_matchup_summary_mentions_probability_and_recent_form():
     assert "elo_delta" in summary
 
 
+def test_main_summary_mode_outputs_model_summary_and_top_feature_drivers(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "src.main.predict_matchup",
+        lambda **kwargs: {
+            "model": "elo_boosted_ensemble",
+            "home_win_probability": 0.61,
+            "away_win_probability": 0.39,
+            "home_team_prediction": "favorite",
+            "game_date": "2026-04-12",
+            "team_context": {
+                "home": {"win_rate_rolling_10": 0.58, "plusMinusPoints_rolling_10": 2.6},
+                "away": {"win_rate_rolling_10": 0.52, "plusMinusPoints_rolling_10": -1.4},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "src.main.load_model_summary",
+        lambda path: {
+            "recommended_model": "elo_boosted_ensemble",
+            "recommendation_metric": "log_loss",
+            "metrics": {"log_loss": 0.63},
+            "top_features": [{"feature": "elo_delta", "importance": 0.8}],
+        },
+    )
+    monkeypatch.setattr(
+        "src.main.load_feature_importance",
+        lambda path, top_n=5: [{"feature": "elo_delta", "importance": 0.8}],
+    )
+
+    exit_code = __import__("src.main", fromlist=["main"]).main(["--home-team-id", "1", "--away-team-id", "2", "--summary"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert '"recommended_model": "elo_boosted_ensemble"' in captured.out
+    assert '"top_features"' in captured.out
+
+
+def test_player_scenario_main_prints_descriptive_summary(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "src.player_scenario.resolve_team_name_to_id",
+        lambda team_name: 1610612738 if team_name == "Boston Celtics" else 1610612747,
+    )
+    monkeypatch.setattr(
+        "src.player_scenario.analyze_single_player_scenario",
+        lambda **kwargs: {
+            "model": "elo_boosted_ensemble",
+            "base_prediction": {"home_win_probability": 0.68},
+            "player_impact": {"person_id": 42},
+            "scenario_summary": "The current production model remains the validated baseline.",
+        },
+    )
+
+    exit_code = __import__("src.player_scenario", fromlist=["main"]).main([
+        "--home-team",
+        "Boston Celtics",
+        "--away-team",
+        "Los Angeles Lakers",
+        "--person-id",
+        "42",
+    ])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert '"model": "elo_boosted_ensemble"' in captured.out
+    assert '"person_id": 42' in captured.out
+
+
 def _sample_games():
     return pd.DataFrame(
         [
