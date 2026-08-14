@@ -120,17 +120,21 @@ only — it adds no new modeling functionality.
 ## Player-impact diagnostics
 
 ```powershell
+.\.venv\Scripts\python src\player_impact.py --person-id 2
 .\.venv\Scripts\python src\roster_change_data.py --validate data/raw/roster_change_events_valid.csv
 .\.venv\Scripts\python src\player_impact.py --validate-roster-events data/raw/roster_change_events_valid.csv
 .\.venv\Scripts\python src\player_impact.py
 .\.venv\Scripts\python src\player_impact.py --roster-events data/raw/roster_change_events_valid.csv
 ```
 
+`src/player_impact.py --person-id ID` computes a descriptive, assumption-labeled
+single-player impact estimate from that player's recent regular-season history,
+using the same minutes-weighted net-rating method validated in the repository.
 `src/player_impact.py --validate-roster-events PATH` and
-`src/roster_change_data.py --validate PATH` both validate an independent
-roster-change CSV against the project contract and print a JSON summary with
-counts, team/person coverage, and the event time window. This is the pre-flight
-check before running `src/player_impact.py --roster-events PATH`.
+`src/roster_change_data.py --validate PATH` validate an independent roster-change
+CSV against the project contract and print a JSON summary with counts,
+team/person coverage, and the event time window. This is the pre-flight check
+before running `src/player_impact.py --roster-events PATH`.
 
 This produces `models/player_impact_metrics.json`, an association-diagnostic
 report (not a causal projection) documented in detail in

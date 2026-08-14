@@ -2,6 +2,7 @@ import argparse
 import json
 import math
 import pickle
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
@@ -19,6 +20,58 @@ ROOT = Path(__file__).resolve().parents[1]
 FEATURES_PATH = ROOT / "data" / "processed" / "game_features.csv"
 MODEL_PATH = ROOT / "models" / "baseline_logistic.pkl"
 METRICS_PATH = ROOT / "models" / "baseline_metrics.json"
+TEAM_DB_PATH = ROOT / "data" / "database" / "nba.db"
+NBA_TEAM_ID_MIN = 1610612737
+NBA_TEAM_ID_MAX = 1610612766
+
+
+def normalize_team_name(team_name):
+    if team_name is None:
+        return ""
+    value = str(team_name).lower()
+    for replacement in (".", ",", "'", '"', "-", "_", "/"):
+        value = value.replace(replacement, " ")
+    return " ".join(value.split())
+
+
+def resolve_team_name_to_id(team_name, db_path=TEAM_DB_PATH):
+    """Resolve a current franchise name or city to a valid NBA teamId."""
+    team_name = (team_name or "").strip()
+    if not team_name:
+        raise ValueError("Team name cannot be empty.")
+
+    normalized = normalize_team_name(team_name)
+    with sqlite3.connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT teamId, teamCity, teamName
+            FROM team_histories
+            WHERE seasonActiveTill >= 2100
+              AND teamId BETWEEN ? AND ?
+            ORDER BY teamCity, teamName
+            """,
+            (NBA_TEAM_ID_MIN, NBA_TEAM_ID_MAX),
+        ).fetchall()
+
+    candidates = []
+    for team_id, city, name in rows:
+        labels = {
+            normalize_team_name(city),
+            normalize_team_name(name),
+            normalize_team_name(f"{city} {name}"),
+        }
+        if normalized in labels:
+            candidates.append(int(team_id))
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        raise ValueError(
+            f"Team name '{team_name}' is ambiguous; use the full franchise name, such as 'Boston Celtics'."
+        )
+    raise ValueError(
+        f"Unknown NBA team name '{team_name}'. Use a current franchise name such as 'Boston Celtics'."
+    )
 
 
 def load_model(model_path=MODEL_PATH):
@@ -94,10 +147,8 @@ def build_prediction_row(home_row, away_row, predictor_columns):
         home_value = home_row.get(column)
         away_value = away_row.get(column)
         if pd.isna(home_value) or pd.isna(away_value):
-            raise ValueError(
-                f"Missing feature value for {column} while comparing teamId "
-                f"{home_row.get('teamId')} vs {away_row.get('teamId')}"
-            )
+            row[column] = float("nan")
+            continue
         row[column] = float(home_value) - float(away_value)
     return pd.DataFrame([row])
 
@@ -219,6 +270,52 @@ def predict_matchup_elo(
     return home_probability, None
 
 
+def summarize_team_context(features, home_team_id, away_team_id, game_date=None):
+    home_row = lookup_last_team_row(features, home_team_id, game_date)
+    away_row = lookup_last_team_row(features, away_team_id, game_date)
+
+    def _format_team(row):
+        return {
+            "teamId": int(row["teamId"]),
+            "win_rate_rolling_10": float(row.get("win_rate_rolling_10", 0.0)),
+            "teamScore_rolling_10": float(row.get("teamScore_rolling_10", 0.0)),
+            "opponentScore_rolling_10": float(row.get("opponentScore_rolling_10", 0.0)),
+            "rest_days": float(row.get("rest_days", 0.0)),
+            "active_players_last_game": float(row.get("active_players_last_game", 0.0)),
+            "plusMinusPoints_rolling_10": float(row.get("plusMinusPoints_rolling_10", 0.0)),
+        }
+
+    return {
+        "home": _format_team(home_row),
+        "away": _format_team(away_row),
+    }
+
+
+def build_matchup_summary(home_probability, away_probability, team_context, feature_importance=None):
+    if team_context is None:
+        return None
+    home_context = team_context.get("home") or {}
+    away_context = team_context.get("away") or {}
+    favorite_label = "home" if home_probability >= away_probability else "away"
+    favorite_probability = max(home_probability, away_probability)
+    home_win_rate = float(home_context.get("win_rate_rolling_10", 0.0))
+    away_win_rate = float(away_context.get("win_rate_rolling_10", 0.0))
+    home_margin = float(home_context.get("plusMinusPoints_rolling_10", 0.0))
+    away_margin = float(away_context.get("plusMinusPoints_rolling_10", 0.0))
+    top_features = feature_importance or []
+    feature_text = ""
+    if top_features:
+        first_feature = top_features[0].get("feature", "model signal")
+        feature_text = f" The main model driver is {first_feature}."
+
+    return (
+        f"The model favors the {favorite_label} team with a {favorite_probability:.1%} win chance. "
+        f"Recent form is {home_win_rate:.1%} for the home team versus {away_win_rate:.1%} for the away team; "
+        f"the home team also carries a rolling point-differential of {home_margin:.1f} compared with {away_margin:.1f} for the away team."
+        f"{feature_text}"
+    )
+
+
 def load_feature_importance(metrics_path=METRICS_PATH, top_n=5):
     if not metrics_path.exists():
         return []
@@ -321,9 +418,16 @@ def predict_matchup(
     }
     if feature_snapshot_date is not None:
         result["feature_snapshot_date"] = feature_snapshot_date
+    result["team_context"] = summarize_team_context(features, home_team_id, away_team_id, game_date)
     feature_importance = load_feature_importance(metrics_path)
     if feature_importance:
         result["feature_importance"] = feature_importance
+    result["matchup_summary"] = build_matchup_summary(
+        home_probability,
+        away_probability,
+        result["team_context"],
+        feature_importance,
+    )
     model_summary = load_model_summary(metrics_path)
     if model_summary:
         result["model_summary"] = model_summary
@@ -341,8 +445,18 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Predict an NBA game outcome using the validated baseline model."
     )
-    parser.add_argument("--home-team-id", type=int, required=True)
-    parser.add_argument("--away-team-id", type=int, required=True)
+    parser.add_argument("--home-team-id", type=int, help="Numeric NBA teamId for the home team.")
+    parser.add_argument("--away-team-id", type=int, help="Numeric NBA teamId for the away team.")
+    parser.add_argument(
+        "--home-team",
+        type=str,
+        help="Current NBA franchise name or city, e.g. 'Boston Celtics' or 'Boston'.",
+    )
+    parser.add_argument(
+        "--away-team",
+        type=str,
+        help="Current NBA franchise name or city, e.g. 'Los Angeles Lakers' or 'Los Angeles'.",
+    )
     parser.add_argument(
         "--game-date",
         type=str,
@@ -358,15 +472,33 @@ def parse_args(argv=None):
         action="store_true",
         help="Include the recommended model, holdout metrics, calibration diagnostics, and top feature drivers in the JSON output.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    home_id_given = args.home_team_id is not None or args.home_team is not None
+    away_id_given = args.away_team_id is not None or args.away_team is not None
+    if not home_id_given:
+        parser.error("Either --home-team-id or --home-team is required.")
+    if not away_id_given:
+        parser.error("Either --away-team-id or --away-team is required.")
+    if args.home_team_id is not None and args.home_team is not None:
+        parser.error("Provide either --home-team-id or --home-team, not both.")
+    if args.away_team_id is not None and args.away_team is not None:
+        parser.error("Provide either --away-team-id or --away-team, not both.")
+    return args
 
 
 def main(argv=None):
     args = parse_args(argv)
+    home_team_id = args.home_team_id
+    if home_team_id is None:
+        home_team_id = resolve_team_name_to_id(args.home_team)
+    away_team_id = args.away_team_id
+    if away_team_id is None:
+        away_team_id = resolve_team_name_to_id(args.away_team)
     try:
         result = predict_matchup(
-            home_team_id=args.home_team_id,
-            away_team_id=args.away_team_id,
+            home_team_id=home_team_id,
+            away_team_id=away_team_id,
             game_date=args.game_date,
         )
     except ValueError as exc:

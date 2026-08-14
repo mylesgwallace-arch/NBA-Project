@@ -1,3 +1,5 @@
+import sqlite3
+
 import pandas as pd
 import pytest
 
@@ -149,6 +151,44 @@ def test_main_validate_roster_events_mode_prints_summary(tmp_path, capsys):
     assert '"event_count": 2' in captured.out
     assert '"add_count": 1' in captured.out
     assert '"remove_count": 1' in captured.out
+
+
+def test_main_person_id_mode_returns_descriptive_player_impact_summary(monkeypatch, tmp_path, capsys):
+    db_path = tmp_path / "impact.db"
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            "CREATE TABLE games (gameId INTEGER PRIMARY KEY, gameDateTimeEst TEXT, gameType TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE player_statistics_extended (personId INTEGER, gameId INTEGER, gameDateTimeEst TEXT, playerteamId INTEGER, numMinutes REAL, netRating REAL, gameType TEXT)"
+        )
+        player_rows = [
+            (1, 1, "2024-01-01 00:00:00", 7, 20.0, 10.0),
+            (1, 2, "2024-01-02 00:00:00", 7, 30.0, 0.0),
+            (1, 3, "2024-01-03 00:00:00", 7, 40.0, 5.0),
+        ]
+        connection.executemany(
+            "INSERT INTO player_statistics_extended (personId, gameId, gameDateTimeEst, playerteamId, numMinutes, netRating, gameType) VALUES (?, ?, ?, ?, ?, ?, 'Regular Season')",
+            player_rows,
+        )
+        for game_id, game_date in [(1, "2024-01-01 00:00:00"), (2, "2024-01-02 00:00:00"), (3, "2024-01-03 00:00:00")]:
+            connection.execute(
+                "INSERT INTO games (gameId, gameDateTimeEst, gameType) VALUES (?, ?, 'Regular Season')",
+                (game_id, game_date),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+    monkeypatch.setattr("src.player_impact.DB_PATH", db_path)
+    exit_code = main(["--person-id", "1"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert '"person_id": 1' in captured.out
+    assert '"prior_games": 3' in captured.out
+    assert '"estimated_net_rating_change"' in captured.out
 
 
 def test_team_participation_controls_use_only_the_prior_team_game():

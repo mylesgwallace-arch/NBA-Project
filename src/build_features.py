@@ -34,6 +34,7 @@ WIN_RATE_FEATURE = "win_rate_rolling_10"
 PLAYER_HISTORY_FEATURES = {
     "player_minutes_rolling_10": "minutes",
     "player_points_rolling_10": "points",
+    "player_points_per_minute_rolling_10": "points_per_minute",
     "player_assists_rolling_10": "assists",
     "player_rebounds_rolling_10": "rebounds",
 }
@@ -86,6 +87,12 @@ def load_player_history(connection):
                player_statistics.personId,
                SUM(COALESCE(CAST(player_statistics.numMinutes AS REAL), 0)) AS minutes,
                SUM(COALESCE(player_statistics.points, 0)) AS points,
+               CASE
+                   WHEN SUM(COALESCE(CAST(player_statistics.numMinutes AS REAL), 0)) > 0
+                   THEN SUM(COALESCE(player_statistics.points, 0)) /
+                        SUM(COALESCE(CAST(player_statistics.numMinutes AS REAL), 0))
+                   ELSE NULL
+               END AS points_per_minute,
                SUM(COALESCE(player_statistics.assists, 0)) AS assists,
                SUM(COALESCE(player_statistics.reboundsTotal, 0)) AS rebounds
         FROM player_statistics
@@ -94,7 +101,7 @@ def load_player_history(connection):
               'Regular Season'
           AND player_statistics.playerteamId IS NOT NULL
         GROUP BY player_statistics.gameId, player_statistics.playerteamId,
-                 player_statistics.personId
+                player_statistics.personId
         """,
         connection,
     )
@@ -181,10 +188,18 @@ def add_pregame_player_features(team_games, activity, player_history=None):
                 )
             current_game = []
             for historical_row in history_by_game.get(key, []):
-                values = {
-                    feature_name: getattr(historical_row, source_column)
-                    for feature_name, source_column in PLAYER_HISTORY_FEATURES.items()
-                }
+                values = {}
+                for feature_name, source_column in PLAYER_HISTORY_FEATURES.items():
+                    if hasattr(historical_row, source_column):
+                        values[feature_name] = getattr(historical_row, source_column)
+                    elif source_column == "points_per_minute":
+                        minutes = getattr(historical_row, "minutes", 0)
+                        points = getattr(historical_row, "points", 0)
+                        values[feature_name] = (
+                            points / minutes if minutes not in (None, 0) else np.nan
+                        )
+                    else:
+                        values[feature_name] = getattr(historical_row, source_column)
                 current_game.append((historical_row.personId, values))
                 update_player(historical_row.personId, values, 1)
             prior_games.append(current_game)
@@ -280,11 +295,14 @@ def build_features():
         .transform(lambda values: values.shift(1).rolling(10, min_periods=5).mean())
     )
     df = add_pregame_player_features(df, activity, player_history)
+    df = add_opponent_adjusted_win_rate(df)
+    df = add_opponent_adjusted_margin(df)
     rolling_columns = [f"{stat}_rolling_10" for stat in STATS]
     df = df.dropna(
         subset=STATS
         + rolling_columns
         + [WIN_RATE_FEATURE]
+        + ["opponent_adjusted_win_rate_rolling_10", "opponent_adjusted_plusMinusPoints_rolling_10"]
         + ["rest_days"]
     )
 

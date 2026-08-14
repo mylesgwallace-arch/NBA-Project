@@ -18,6 +18,7 @@ from src.train_baseline_model import (
     evaluate_elo,
     evaluate_elo_by_season,
     evaluate_opponent_form_experiment,
+    evaluate_player_efficiency_experiment,
     select_recommended_model,
     summarize_feature_importance,
     tune_hybrid_logistic,
@@ -123,6 +124,76 @@ def test_game_dataset_includes_pregame_player_availability_differences():
     ]
     assert games.loc[0, "active_players_rolling_10"] == -1
     assert games.loc[0, "active_players_last_game"] == -2
+
+
+def test_game_dataset_includes_player_points_per_minute_when_available():
+    features = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-03",
+                "teamId": 10,
+                "home": 1,
+                "win": 1,
+                "teamScore_rolling_10": 100,
+                "player_points_per_minute_rolling_10": 0.5,
+            },
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-03",
+                "teamId": 20,
+                "home": 0,
+                "win": 0,
+                "teamScore_rolling_10": 95,
+                "player_points_per_minute_rolling_10": 0.4,
+            },
+        ]
+    )
+
+    games, predictors = build_game_dataset(features)
+
+    assert predictors == [
+        "teamScore_rolling_10",
+        "player_points_per_minute_rolling_10",
+    ]
+    assert np.isclose(games.loc[0, "player_points_per_minute_rolling_10"], 0.1)
+
+
+def test_game_dataset_includes_opponent_adjusted_form_differences():
+    features = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-03",
+                "teamId": 10,
+                "home": 1,
+                "win": 1,
+                "teamScore_rolling_10": 100,
+                "opponent_adjusted_win_rate_rolling_10": 0.1,
+                "opponent_adjusted_plusMinusPoints_rolling_10": 3.5,
+            },
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2020-01-03",
+                "teamId": 20,
+                "home": 0,
+                "win": 0,
+                "teamScore_rolling_10": 95,
+                "opponent_adjusted_win_rate_rolling_10": -0.2,
+                "opponent_adjusted_plusMinusPoints_rolling_10": -1.5,
+            },
+        ]
+    )
+
+    games, predictors = build_game_dataset(features)
+
+    assert predictors == [
+        "teamScore_rolling_10",
+        "opponent_adjusted_win_rate_rolling_10",
+        "opponent_adjusted_plusMinusPoints_rolling_10",
+    ]
+    assert np.isclose(games.loc[0, "opponent_adjusted_win_rate_rolling_10"], 0.3)
+    assert np.isclose(games.loc[0, "opponent_adjusted_plusMinusPoints_rolling_10"], 5.0)
 
 
 def test_elo_updates_after_completed_games_only():
@@ -288,6 +359,15 @@ def test_evaluate_opponent_form_experiment_reports_key_metrics():
 
     assert set(metrics) >= {"baseline", "with_opponent_form"}
     assert "opponent_adjusted_win_rate_rolling_10" in metrics["augmented_feature_names"]
+    assert set(metrics["baseline"]) >= {"accuracy", "log_loss", "brier_score"}
+
+
+def test_evaluate_player_efficiency_experiment_reports_key_metrics():
+    features = pd.read_csv("data/processed/game_features.csv")
+    metrics = evaluate_player_efficiency_experiment(features)
+
+    assert set(metrics) >= {"baseline", "with_player_efficiency"}
+    assert "player_points_per_minute_rolling_10" in metrics["candidate_feature_names"]
     assert set(metrics["baseline"]) >= {"accuracy", "log_loss", "brier_score"}
 
 

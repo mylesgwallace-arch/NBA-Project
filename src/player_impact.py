@@ -51,6 +51,33 @@ def load_player_history(connection, person_id, before=None):
     return history
 
 
+def summarize_player_impact(person_id, before=None, window=WINDOW):
+    """Return a single-player descriptive impact estimate from prior regular-season data."""
+    with sqlite3.connect(DB_PATH) as connection:
+        history = load_player_history(connection, person_id, before=before)
+    if history.empty:
+        raise ValueError(f"No prior regular-season appearances found for personId={person_id}.")
+    estimate = estimate_player_impact(history, window=window)
+    team_counts = history["teamId"].value_counts(dropna=False)
+    recent_team_id = int(team_counts.index[0]) if not team_counts.empty else None
+    return {
+        "person_id": int(person_id),
+        "recent_team_id": recent_team_id,
+        "before": None if before is None else str(pd.Timestamp(before).date()),
+        "window": int(window),
+        "prior_games": estimate["prior_games"],
+        "player_net_rating": float(estimate["player_net_rating"]),
+        "expected_minutes": float(estimate["expected_minutes"]),
+        "estimated_net_rating_change": float(estimate["estimated_net_rating_change"]),
+        "baseline_net_rating": float(estimate["baseline_net_rating"]),
+        "direction": estimate["direction"],
+        "note": (
+            "This is a descriptive player-impact association estimate. It is not a "
+            "causal forecast of roster or trade impact."
+        ),
+    }
+
+
 def estimate_player_impact(
     history, window=WINDOW, baseline_net_rating=BASELINE_NET_RATING,
     direction="addition",
@@ -899,6 +926,22 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--person-id",
+        type=int,
+        help="Evaluate a player's recent regular-season impact using the repository's descriptive player-impact estimate.",
+    )
+    parser.add_argument(
+        "--before",
+        type=str,
+        help="Optional cutoff date (YYYY-MM-DD) for the player-impact estimate; only prior games are used.",
+    )
+    parser.add_argument(
+        "--window",
+        type=int,
+        default=WINDOW,
+        help="Number of recent games to use when estimating average previous-player impact.",
+    )
+    parser.add_argument(
         "--roster-events",
         type=Path,
         help="CSV of independently sourced timestamped roster changes",
@@ -917,6 +960,15 @@ def main(argv=None):
 
         events = load_roster_change_events(arguments.validate_roster_events)
         print(json.dumps(summarize_roster_change_events(events), indent=2))
+        return 0
+
+    if arguments.person_id is not None:
+        metrics = summarize_player_impact(
+            arguments.person_id,
+            before=arguments.before,
+            window=arguments.window,
+        )
+        print(json.dumps(metrics, indent=2))
         return 0
 
     with sqlite3.connect(DB_PATH) as connection:

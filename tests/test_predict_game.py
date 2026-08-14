@@ -3,13 +3,16 @@ import json
 import pandas as pd
 
 from src.main import (
+    build_matchup_summary,
     build_prediction_row,
     compute_elo_ratings_as_of,
     load_feature_importance,
     load_model_summary,
     load_recommended_model_name,
     lookup_last_team_row,
+    parse_args,
     predict_matchup,
+    resolve_team_name_to_id,
     validate_prediction_probability,
 )
 
@@ -73,6 +76,62 @@ def test_lookup_last_team_row_respects_game_date_cutoff():
     row = lookup_last_team_row(features, team_id=10, game_date="2020-01-04")
 
     assert row["teamScore_rolling_10"] == 102.0
+
+
+def test_resolve_team_name_to_id_handles_current_franchise_names(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "nba.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE team_histories (
+                teamId INTEGER, teamCity TEXT, teamName TEXT,
+                teamAbbrev TEXT, seasonFounded INTEGER,
+                seasonActiveTill INTEGER, league TEXT
+            )
+            """
+        )
+        connection.executemany(
+            "INSERT INTO team_histories VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (1610612737, "Atlanta", "Hawks", "ATL", 1968, 2100, "NBA"),
+                (1610612738, "Boston", "Celtics", "BOS", 1946, 2100, "NBA"),
+                (1610612740, "New Orleans", "Pelicans", "NOP", 2002, 2100, "NBA"),
+                (1610612737, "St. Louis", "Hawks", "STL", 1955, 1967, "NBA"),
+            ],
+        )
+        connection.commit()
+
+    assert resolve_team_name_to_id("Atlanta Hawks", db_path) == 1610612737
+    assert resolve_team_name_to_id("Boston", db_path) == 1610612738
+    assert resolve_team_name_to_id("pelicans", db_path) == 1610612740
+
+
+def test_parse_args_accepts_human_friendly_team_names():
+    args = parse_args(["--home-team", "Boston Celtics", "--away-team", "Los Angeles Lakers"])
+
+    assert args.home_team_id is None
+    assert args.away_team_id is None
+    assert args.home_team == "Boston Celtics"
+    assert args.away_team == "Los Angeles Lakers"
+
+
+def test_build_matchup_summary_mentions_probability_and_recent_form():
+    summary = build_matchup_summary(
+        0.7,
+        0.3,
+        {
+            "home": {"win_rate_rolling_10": 0.8, "plusMinusPoints_rolling_10": 11.7},
+            "away": {"win_rate_rolling_10": 0.55, "plusMinusPoints_rolling_10": 2.4},
+        },
+        [{"feature": "elo_delta"}],
+    )
+
+    assert "70.0%" in summary
+    assert "home team" in summary
+    assert "Recent form is 80.0%" in summary
+    assert "elo_delta" in summary
 
 
 def _sample_games():

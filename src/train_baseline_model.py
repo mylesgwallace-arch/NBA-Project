@@ -59,7 +59,13 @@ def build_game_dataset(features):
         column
         for column in features.columns
         if column.endswith("_rolling_10")
-        and column not in {"active_players_rolling_10", *player_history_columns}
+        and column
+        not in {
+            "active_players_rolling_10",
+            *player_history_columns,
+            "opponent_win_rate_rolling_10",
+            "opponent_plusMinusPoints_rolling_10",
+        }
     ]
     predictor_columns = rolling_columns.copy()
     optional_team_predictors = [
@@ -69,13 +75,17 @@ def build_game_dataset(features):
             "active_players_last_game",
             "player_minutes_rolling_10",
             "player_points_rolling_10",
+            "player_points_per_minute_rolling_10",
             "player_assists_rolling_10",
             "player_rebounds_rolling_10",
             "rest_days",
+            "opponent_adjusted_win_rate_rolling_10",
+            "opponent_adjusted_plusMinusPoints_rolling_10",
         ]
         if column in features.columns
     ]
     predictor_columns.extend(optional_team_predictors)
+    predictor_columns = list(dict.fromkeys(predictor_columns))
     home = features[features["home"] == 1][
         ["gameId", "gameDateTimeEst", "teamId", "win", *predictor_columns]
     ].rename(
@@ -330,6 +340,15 @@ def add_opponent_form_features(features):
     if not required_columns.issubset(features.columns):
         return features.copy()
 
+    merged = features.drop(
+        columns=[
+            column
+            for column in ["opponent_win_rate_rolling_10", "opponent_plusMinusPoints_rolling_10"]
+            if column in features.columns
+        ],
+        errors="ignore",
+    )
+
     opponent_win = (
         features[["gameId", "teamId", "win_rate_rolling_10"]]
         .rename(
@@ -339,7 +358,7 @@ def add_opponent_form_features(features):
             }
         )
     )
-    merged = features.merge(
+    merged = merged.merge(
         opponent_win,
         on=["gameId", "opponentTeamId"],
         how="left",
@@ -437,6 +456,74 @@ def evaluate_opponent_form_experiment(features, parameters=None):
                 "opponent_adjusted_plusMinusPoints_rolling_10",
             ]
             if column in augmented_columns
+        ],
+    }
+
+
+def evaluate_player_efficiency_experiment(features, parameters=None):
+    """Measure a player-efficiency feature against the same holdout.
+
+    The experiment is deliberately descriptive and uses the same leakage-safe,
+    chronological split as the rest of the baseline suite. It is only used to decide
+    whether the new signal belongs in the explanatory or retained feature set.
+    """
+    if parameters is None:
+        parameters = {
+            "max_depth": 4,
+            "learning_rate": 0.05,
+            "max_iter": 200,
+            "random_state": 42,
+        }
+
+    candidate_feature = "player_points_per_minute_rolling_10"
+    baseline_features = features.drop(columns=[candidate_feature], errors="ignore")
+    baseline_games, baseline_columns = build_game_dataset(baseline_features)
+    baseline_games = add_elo_rating_deltas(baseline_games)
+    baseline_columns = baseline_columns + ["elo_delta"]
+
+    candidate_games, candidate_columns = build_game_dataset(features)
+    candidate_games = add_elo_rating_deltas(candidate_games)
+    candidate_columns = candidate_columns + ["elo_delta"]
+
+    split = int(len(baseline_games) * (1 - TEST_FRACTION))
+    baseline_train = baseline_games.iloc[:split]
+    baseline_test = baseline_games.iloc[split:]
+    candidate_train = candidate_games.iloc[:split]
+    candidate_test = candidate_games.iloc[split:]
+
+    baseline_model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("boosted", HistGradientBoostingClassifier(**parameters)),
+        ]
+    )
+    baseline_model.fit(baseline_train[baseline_columns], baseline_train["target"])
+    baseline_probabilities = baseline_model.predict_proba(
+        baseline_test[baseline_columns]
+    )[:, 1]
+
+    candidate_model = Pipeline(
+        [
+            ("impute", SimpleImputer(strategy="median")),
+            ("boosted", HistGradientBoostingClassifier(**parameters)),
+        ]
+    )
+    candidate_model.fit(candidate_train[candidate_columns], candidate_train["target"])
+    candidate_probabilities = candidate_model.predict_proba(
+        candidate_test[candidate_columns]
+    )[:, 1]
+
+    return {
+        "baseline": evaluate_predictions(baseline_test["target"], baseline_probabilities),
+        "with_player_efficiency": evaluate_predictions(
+            candidate_test["target"], candidate_probabilities
+        ),
+        "baseline_columns": baseline_columns,
+        "candidate_columns": candidate_columns,
+        "candidate_feature_names": [
+            column
+            for column in [candidate_feature]
+            if column in candidate_columns
         ],
     }
 

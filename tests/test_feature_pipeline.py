@@ -88,10 +88,13 @@ def load_expected_features():
         source.groupby("teamId")["win"]
         .transform(lambda values: values.shift(1).rolling(10, min_periods=5).mean())
     )
+    source = add_opponent_adjusted_win_rate(source)
+    source = add_opponent_adjusted_margin(source)
     return source.dropna(
         subset=STATS
         + rolling_columns
         + [WIN_RATE_FEATURE]
+        + ["opponent_adjusted_win_rate_rolling_10", "opponent_adjusted_plusMinusPoints_rolling_10"]
     )
 
 
@@ -99,7 +102,7 @@ def test_generated_features_match_source_and_rolling_history():
     expected = load_expected_features()
     actual = pd.read_csv(FEATURES_PATH)
 
-    assert len(expected) == 133_466
+    assert len(expected) == 133_348
     assert len(actual) == len(expected)
     assert not actual.duplicated(["gameId", "teamId"]).any()
     assert not actual[STATS].isna().any().any()
@@ -201,6 +204,8 @@ def test_pregame_player_history_uses_only_previous_team_games():
     assert result["player_minutes_rolling_10"].iloc[1] == 200
     assert result["player_minutes_rolling_10"].iloc[2] == 205
     assert result["player_points_rolling_10"].iloc[2] == 105
+    assert result["player_points_per_minute_rolling_10"].iloc[1] == 0.5
+    assert np.isclose(result["player_points_per_minute_rolling_10"].iloc[2], 0.5119047619047619)
 
 
 def test_opponent_adjusted_win_rate_uses_opponent_pregame_form():

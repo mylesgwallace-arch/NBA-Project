@@ -2,6 +2,7 @@ from src.interactive_predict import (
     load_current_teams,
     summarize_model_features,
     summarize_model_report,
+    summarize_team_context,
 )
 
 
@@ -81,3 +82,31 @@ def test_summarize_model_report_formats_current_model_summary():
     assert "Expected calibration error: 0.047" in summary
     assert "calibrated_boosted_hybrid: log_loss=0.6277, ECE=0.022" in summary
     assert "elo_delta (69.5%)" in summary
+
+
+def test_summarize_team_context_formats_recent_team_snapshot():
+    result = {
+        "team_context": {
+            "home": {
+                "win_rate_rolling_10": 0.62,
+                "teamScore_rolling_10": 113.5,
+                "opponentScore_rolling_10": 108.1,
+                "rest_days": 2.0,
+                "active_players_last_game": 8.0,
+            },
+            "away": {
+                "win_rate_rolling_10": 0.48,
+                "teamScore_rolling_10": 109.2,
+                "opponentScore_rolling_10": 110.9,
+                "rest_days": 1.0,
+                "active_players_last_game": 7.0,
+            },
+        }
+    }
+
+    summary = summarize_team_context(result)
+
+    assert "Recent team context:" in summary
+    assert "win rate=62.0%" in summary
+    assert "rest=2 days" in summary
+    assert "active players=8" in summary

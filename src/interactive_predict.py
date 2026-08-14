@@ -115,6 +115,22 @@ def summarize_model_report(result):
     return "\n".join(lines)
 
 
+def summarize_team_context(result):
+    context = result.get("team_context")
+    if not context:
+        return None
+    lines = ["\nRecent team context:"]
+    for side, values in (("Home", context.get("home") or {}), ("Away", context.get("away") or {})):
+        lines.append(
+            f"  {side}: win rate={values.get('win_rate_rolling_10', 0.0):.1%}, "
+            f"team points={values.get('teamScore_rolling_10', 0.0):.1f}, "
+            f"opp points={values.get('opponentScore_rolling_10', 0.0):.1f}, "
+            f"rest={values.get('rest_days', 0.0):.0f} days, "
+            f"active players={values.get('active_players_last_game', 0.0):.0f}"
+        )
+    return "\n".join(lines)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Run the interactive NBA prediction interface."
@@ -166,10 +182,16 @@ def run_interactive_session(db_path=DB_PATH, explain=False, summary=False):
     print(f"{away_label} win probability: {result['away_win_probability']:.1%}")
     favorite_label = home_label if result["home_team_prediction"] == "favorite" else away_label
     print(f"Predicted favorite: {favorite_label}")
-    if summary or explain or result.get("feature_importance") or result.get("model_summary"):
+    if summary or explain or result.get("feature_importance") or result.get("model_summary") or result.get("team_context"):
+        if result.get("matchup_summary"):
+            print(f"\nPrediction summary: {result['matchup_summary']}")
         report = summarize_model_report(result) if summary or result.get("model_summary") else None
-        if not report:
+        if not report and explain:
             report = summarize_model_features(result)
+        if result.get("team_context"):
+            team_report = summarize_team_context(result)
+            if team_report:
+                print(team_report)
         if report:
             print(report)
 

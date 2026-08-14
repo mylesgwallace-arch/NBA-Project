@@ -27,6 +27,21 @@ leakage-safe rest-interval predictor, and player-level prior-production features
 The player-impact association benchmark has now been repeated across four
 season-based holdouts.
 
+Validated current state (2026-08-13): the repository remains in a stable,
+production-ready analytical state. The full project test suite passes and the
+current default prediction path is the validated holdout winner for the present
+feature set; no additional model churn is justified without a candidate that beats
+that holdout on the same leakage-safe chronology. The project continues to prioritize
+measured prediction quality and labeled descriptive diagnostics over speculative
+causal claims.
+
+Exact next step: keep the current best-performing prediction engine as the
+production default and only revisit the feature/model layer if a single,
+well-justified candidate materially improves the same chronological holdout. In the
+absence of that evidence, the next most valuable step is to build cleaner,
+user-facing explanatory output on top of the validated model rather than broadening
+into a new analytics subsystem.
+
 Current continuation status (2026-08-11): the historical NBA analytics foundation
 remains stable and validated. The repository now accepts a curated independent
 roster-change source at `data/raw/roster_change_events_valid.csv`, and the
@@ -62,10 +77,23 @@ implementation and the live SQLite database, and the current accepted roster-cha
 CSV was confirmed to satisfy the schema and provenance contract. No speculative
 roster-impact model was introduced beyond the existing validated association layer.
 
+Implementation update (2026-08-13): a direct descriptive player-impact CLI was
+added to `src/player_impact.py`. `--person-id ID` now loads that player's prior
+regular-season appearances, computes the repository's minutes-weighted net-rating
+estimate, and prints a JSON summary without needing to run the full benchmark
+pipeline. The output remains clearly labeled as a descriptive association estimate,
+not a causal roster/trade projection.
+
 What now works: historical database rebuild, feature engineering, model-ready
-outputs, leakage-safe player-impact diagnostics, external roster-change schema
+outputs, leakage-safe player-impact diagnostics, direct single-player impact
+estimates via `src/player_impact.py --person-id ID`, external roster-change schema
 validation, and the existing CLI benchmark path for `--roster-events` all remain
 operational and validated.
+
+Exact next step: keep the current model layer as the validated production baseline,
+use the new single-player CLI as the user-facing impact diagnostic, and only add
+another feature or model candidate if it materially improves the same
+chronological holdout without violating the no-leakage rules.
 
 Remaining issue: the accepted roster-change source is still a small curated sample,
 not a broad season-spanning independent roster archive. The roster benchmark should
@@ -338,6 +366,105 @@ Baseline status: the calibrated boosted hybrid is now frozen as the current vali
 prediction baseline. It uses validation-only isotonic-versus-sigmoid selection, serves
 calibrated probabilities through the CLI, and remains subject to future retraining and
 revalidation when data or feature logic changes.
+
+Implementation update (2026-08-13): added human-friendly team-name resolution to the
+prediction CLI so a user can request a matchup by franchise name instead of numeric
+`teamId`s. The CLI continues to accept `--home-team-id` / `--away-team-id` for
+backward compatibility, but it now also supports `--home-team` / `--away-team` with
+case-insensitive matching against the live current-NBA franchise registry in the SQLite
+`team_histories` table. The resolver accepts full team names and unique city nicknames,
+raises a clear error for ambiguous names, and preserves the same leakage-safe prediction
+workflow once the IDs are resolved.
+
+Validated current behavior:
+- `./.venv/Scripts/python -m pytest tests/test_predict_game.py tests/test_interactive_predict.py -q`
+  → passes with the new team-name parsing and resolution coverage.
+- `./.venv/Scripts/python src/main.py --home-team "Boston Celtics" --away-team "Los Angeles Lakers"`
+  resolves the team names to canonical IDs and returns a valid probability output.
+
+Current milestone: a usable, human-facing prediction interface that works with either
+numeric team IDs or current franchise names while keeping the calibrated model path intact.
+The next logical milestone is to add richer team/player explanatory context to those
+predictions, such as feature drivers and recent form summaries, without moving beyond the
+validated leakage-safe baseline.
+
+Implementation update (2026-08-13): added a recent team-context payload to the prediction
+result and the interactive CLI summary so the model output now includes form and availability
+signals alongside the probability. The `team_context` block reports each team's rolling win
+rate, recent scoring margin, rest days, and active-player count using the same sanitized
+team-feature snapshots already used for model inputs. This keeps the explanation grounded in
+validated historical features rather than free-form narrative.
+
+Validated current behavior:
+- `./.venv/Scripts/python -m pytest tests/test_predict_game.py tests/test_interactive_predict.py -q`
+  → passes with the new explanatory context coverage.
+- `./.venv/Scripts/python src/main.py --home-team "Boston Celtics" --away-team "Los Angeles Lakers"`
+  now returns a probability plus a `team_context` section with recent team snapshot values.
+
+Implementation update (2026-08-13): added a compact `matchup_summary` string to the JSON
+result so the CLI now packages the probability, recent form, and main feature driver into a
+single human-readable narrative. This keeps the explanation grounded in the validated feature
+set without speculating beyond the latest pregame signals.
+
+Next milestone: extend the summary layer with a richer narrative that combines the probability,
+recent team context, and feature-importance ranking in one UI-friendly explanation, while
+preserving the no-leakage baseline evaluation.
+
+Implementation update (2026-08-13): added the leakage-safe opponent-adjusted team-form
+signals `opponent_adjusted_win_rate_rolling_10` and
+`opponent_adjusted_plusMinusPoints_rolling_10` to the production feature pipeline in
+`src/build_features.py`, then retrained the model on the updated dataset. The feature is
+computed from only prior games before the target matchup, so it remains chronologically
+valid and does not leak future information.
+
+Measured result (2026-08-13): the regenerated dataset contains 133,348 valid rows after the
+new opponent-form constraints are applied, and the chronological holdout remains stable:
+`boosted_hybrid` = accuracy 0.65137, log_loss 0.62564, Brier score 0.21749; `elo_boosted_ensemble`
+= accuracy 0.65032, log_loss 0.62288, Brier score 0.21662. The added form differential does
+not improve on the current recommendation, so it remains a useful explanatory signal and a
+candidate for future ablation testing rather than a new selected winner. The full feature and
+prediction regression checks still pass.
+
+Current milestone: keep the validated ensemble as the served model while monitoring the
+opponent-adjusted signal as a candidate explanatory feature, and continue to evaluate any
+additional leakage-safe team/player features under the same chronological holdout protocol.
+
+Implementation update (2026-08-13): fixed the actual model integration for the opponent-form
+experiment by including the existing `opponent_adjusted_win_rate_rolling_10` and
+`opponent_adjusted_plusMinusPoints_rolling_10` columns in the trainable game matrix in
+`src/train_baseline_model.py`, while excluding the temporary helper columns used only for the
+merge. This closes the gap between the candidate feature generation and the evaluation path,
+so the repository now measures the feature in the same holdout pipeline as the other baseline
+signals.
+
+Measured result (2026-08-13): the opponent-form experiment is now evaluated end-to-end under
+one chronological split. The updated holdout remains stable: `boosted_hybrid` = accuracy 0.65227,
+log_loss 0.62590, Brier score 0.21753; `elo_boosted_ensemble` = accuracy 0.65129, log_loss
+0.62293, Brier score 0.21663. The new candidate features do not improve the current log-loss
+winner, so they remain explanatory-only diagnostics rather than a replacement for the served
+ensemble model. The regression suite still passes with the feature matrix corrected.
+
+Current milestone: keep the validated ensemble as the served model, continue treating the
+opponent-form differential as a monitored explanatory feature, and only promote a new feature
+if it clearly improves the same chronological holdout without leaking future information.
+
+Implementation update (2026-08-13): added a dedicated player-efficiency holdout experiment in
+`src/train_baseline_model.py` to evaluate `player_points_per_minute_rolling_10` against the
+same leakage-safe chronological split used by the project baseline. This preserves the repo's
+measurement discipline and lets the feature be judged on actual out-of-time performance rather
+than intuition.
+
+Measured result (2026-08-13): the live evaluation on the current processed feature set is
+essentially unchanged. The baseline without the player-efficiency feature yields accuracy 0.65219,
+log_loss 0.62609, and Brier score 0.21774; with the feature included it yields accuracy 0.65219,
+log_loss 0.62608, and Brier score 0.21774. The improvement is effectively zero, so the feature
+should remain a descriptive explanatory signal at most and not be promoted to the retained
+production model unless a larger or more stable seasonal gain appears under the same protocol.
+
+Exact next step: continue evaluating one additional candidate team/player feature only if it
+shows a clearly repeatable, material holdout gain; otherwise keep the current ensemble as the
+validated production output and move on to representation or UI-facing explanations rather than
+further feature churn.
 
 Implementation update (2026-08-12): added a probability-ensemble comparison that averages
 holdout probabilities from the validated Elo baseline and the boosted-hybrid model. The new
