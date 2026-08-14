@@ -3,7 +3,10 @@ import pytest
 
 from src.roster_change_data import (
     load_roster_change_events,
+    load_nba_player_movement_source,
     main,
+    normalize_nba_player_movement_records,
+    summarize_nba_player_movement_normalization,
     summarize_roster_change_events,
     validate_roster_change_events,
 )
@@ -29,6 +32,79 @@ def _events():
                 "change_type": "add",
                 "source": "independent source",
                 "source_url": "https://example.test/event-a",
+            },
+        ]
+    )
+
+
+def _player_movement_rows():
+    return pd.DataFrame(
+        [
+            {
+                "transaction_type": "Signing",
+                "transaction_date": "2024-07-01T00:00:00",
+                "transaction_description": "Boston Celtics signed guard Sample One.",
+                "team_id": 1610612738,
+                "team_slug": "celtics",
+                "player_id": 100,
+                "player_slug": "sample-one",
+                "additional_sort": 0,
+                "groupsort": "Signing 1",
+            },
+            {
+                "transaction_type": "Waive",
+                "transaction_date": "2024-07-02T00:00:00",
+                "transaction_description": "Boston Celtics waived guard Sample One.",
+                "team_id": 1610612738,
+                "team_slug": "celtics",
+                "player_id": 100,
+                "player_slug": "sample-one",
+                "additional_sort": 0,
+                "groupsort": "Waive 1",
+            },
+            {
+                "transaction_type": "AwardOnWaivers",
+                "transaction_date": "2024-07-03T00:00:00",
+                "transaction_description": "Los Angeles Lakers claimed forward Sample Two off waivers.",
+                "team_id": 1610612747,
+                "team_slug": "lakers",
+                "player_id": 200,
+                "player_slug": "sample-two",
+                "additional_sort": 0,
+                "groupsort": "AwardedOnWaivers 1",
+            },
+            {
+                "transaction_type": "Trade",
+                "transaction_date": "2024-07-04T00:00:00",
+                "transaction_description": "Los Angeles Lakers received forward Sample Three from Boston Celtics.",
+                "team_id": 1610612747,
+                "team_slug": "lakers",
+                "player_id": 300,
+                "player_slug": "sample-three",
+                "additional_sort": 1610612738,
+                "groupsort": "Trade 1",
+            },
+            {
+                "transaction_type": "Trade",
+                "transaction_date": "2024-07-04T00:00:00",
+                "transaction_description": "Los Angeles Lakers received draft consideration from Boston Celtics.",
+                "team_id": 1610612747,
+                "team_slug": "lakers",
+                "player_id": 0,
+                "player_slug": None,
+                "additional_sort": 1610612738,
+                "groupsort": "Trade 1",
+            },
+            {
+                "transaction_type": "ContractConverted",
+                "transaction_date": "2024-07-05T00:00:00",
+                "transaction_description": "Boston Celtics converted the contract of guard Sample Four to an NBA Contract.",
+                "team_id": 1610612738,
+                "team_slug": "celtics",
+                "player_id": 400,
+                "player_slug": "sample-four",
+                "additional_sort": 0,
+                "groupsort": "ContractConverted 1",
             },
         ]
     )
@@ -97,6 +173,59 @@ def test_naive_timestamps_are_accepted_and_normalized_to_utc():
     result = validate_roster_change_events(events)
 
     assert result.loc[0, "event_timestamp"].tzinfo is not None
+
+
+def test_player_movement_rows_are_normalized_into_high_confidence_events_with_audit():
+    events, audit = normalize_nba_player_movement_records(_player_movement_rows())
+
+    assert len(events) == 5
+    assert events["change_type"].tolist() == ["add", "remove", "add", "add", "remove"]
+    assert set(events["confidence_level"]) == {"high"}
+    assert set(events["reconstruction_rule"]) == {
+        "signing_add",
+        "waive_remove",
+        "award_on_waivers_add",
+        "trade_destination_add",
+        "trade_origin_remove",
+    }
+    trade_remove = events[events["reconstruction_rule"] == "trade_origin_remove"].iloc[0]
+    trade_add = events[events["reconstruction_rule"] == "trade_destination_add"].iloc[0]
+    assert trade_remove["team_id"] == 1610612738
+    assert trade_add["team_id"] == 1610612747
+    assert trade_add["source_groupsort"] == "Trade 1"
+
+    excluded = audit[audit["reconstruction_status"] == "excluded"]
+    assert len(excluded) == 2
+    assert excluded["normalized_event_count"].tolist() == [0, 0]
+    assert "non-player consideration" in excluded.iloc[0]["exclusion_reason"]
+    assert "contract conversion" in excluded.iloc[1]["exclusion_reason"]
+
+
+def test_player_movement_summary_matches_real_raw_source_counts_and_date_coverage():
+    source = load_nba_player_movement_source()
+    events, audit = normalize_nba_player_movement_records(source)
+    summary = summarize_nba_player_movement_normalization(events, audit)
+
+    assert summary["raw_row_count"] == 9746
+    assert summary["normalized_source_row_count"] == 9102
+    assert summary["excluded_source_row_count"] == 644
+    assert summary["raw_transaction_type_counts"] == {
+        "Signing": 4608,
+        "Waive": 3152,
+        "Trade": 1788,
+        "ContractConverted": 128,
+        "AwardOnWaivers": 70,
+    }
+    assert summary["high_confidence_event_count"] == 10374
+    assert summary["add_count"] == 5950
+    assert summary["remove_count"] == 4424
+    assert summary["raw_unique_transaction_dates"] == 1979
+    assert summary["event_unique_transaction_dates"] == 1978
+    assert summary["missing_raw_transaction_dates_from_events"] == ["2023-09-14"]
+    assert summary["excluded_rows_by_reason"] == {
+        "trade row has no player_id, so it only documents non-player consideration": 516,
+        "contract conversion changes contract status but does not prove a roster add/remove transition": 128,
+    }
 
 
 def test_basketball_reference_add_event_is_resolved_to_repo_ids():

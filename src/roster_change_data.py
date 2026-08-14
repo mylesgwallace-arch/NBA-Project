@@ -19,12 +19,74 @@ ROSTER_CHANGE_COLUMNS = [
     "source_url",
 ]
 CHANGE_TYPES = {"add", "remove"}
+PLAYER_MOVEMENT_COLUMNS = [
+    "transaction_type",
+    "transaction_date",
+    "transaction_description",
+    "team_id",
+    "team_slug",
+    "player_id",
+    "player_slug",
+    "additional_sort",
+    "groupsort",
+]
+PLAYER_MOVEMENT_SOURCE = "NBA player movement raw CSV"
+PLAYER_MOVEMENT_SOURCE_URL = (
+    "https://github.com/mylesgwallace-arch/NBA-Project/blob/main/data/raw/"
+    "nba_player_movement_raw.csv"
+)
+PLAYER_MOVEMENT_HIGH_CONFIDENCE = "high"
+PLAYER_MOVEMENT_EXCLUDED = "excluded"
+PLAYER_MOVEMENT_RECONSTRUCTION_RULES = {
+    "signing_add": {
+        "transaction_type": "Signing",
+        "confidence_level": PLAYER_MOVEMENT_HIGH_CONFIDENCE,
+        "description": "Emit one add event when the source row directly identifies a player signing or re-signing with a team.",
+    },
+    "waive_remove": {
+        "transaction_type": "Waive",
+        "confidence_level": PLAYER_MOVEMENT_HIGH_CONFIDENCE,
+        "description": "Emit one remove event when the source row directly identifies a team waiving a player.",
+    },
+    "award_on_waivers_add": {
+        "transaction_type": "AwardOnWaivers",
+        "confidence_level": PLAYER_MOVEMENT_HIGH_CONFIDENCE,
+        "description": "Emit one add event when the source row directly identifies a team claiming a player off waivers.",
+    },
+    "trade_destination_add": {
+        "transaction_type": "Trade",
+        "confidence_level": PLAYER_MOVEMENT_HIGH_CONFIDENCE,
+        "description": "Emit one add event for the receiving team reported in the trade row.",
+    },
+    "trade_origin_remove": {
+        "transaction_type": "Trade",
+        "confidence_level": PLAYER_MOVEMENT_HIGH_CONFIDENCE,
+        "description": "Emit one remove event for the origin team when the trade row includes a player id and the source-team id in additional_sort.",
+    },
+    "contract_converted_excluded": {
+        "transaction_type": "ContractConverted",
+        "confidence_level": PLAYER_MOVEMENT_EXCLUDED,
+        "description": "Do not emit downstream roster events because the row proves only a contract-state change, not a roster add/remove.",
+    },
+    "trade_non_player_excluded": {
+        "transaction_type": "Trade",
+        "confidence_level": PLAYER_MOVEMENT_EXCLUDED,
+        "description": "Do not emit downstream roster events for trade rows without a player id because they describe non-player consideration.",
+    },
+}
 BASKETBALL_REFERENCE_BASE_URL = "https://www.basketball-reference.com"
 BASKETBALL_REFERENCE_SEASONS = (2022, 2023, 2024, 2025)
 BENCHMARK_SEASONS = BASKETBALL_REFERENCE_SEASONS
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PLAYERS_PATH = ROOT / "data" / "raw" / "Players.csv"
 DEFAULT_TEAM_HISTORIES_PATH = ROOT / "data" / "raw" / "TeamHistories.csv"
+DEFAULT_PLAYER_MOVEMENT_PATH = ROOT / "data" / "raw" / "nba_player_movement_raw.csv"
+DEFAULT_PLAYER_MOVEMENT_EVENTS_PATH = (
+    ROOT / "data" / "processed" / "nba_player_movement_roster_change_events.csv"
+)
+DEFAULT_PLAYER_MOVEMENT_AUDIT_PATH = (
+    ROOT / "data" / "processed" / "nba_player_movement_roster_change_audit.csv"
+)
 
 
 def benchmark_season_for_page(page_season):
@@ -65,6 +127,259 @@ def _season_team_histories(season, team_histories):
         (team_histories["seasonFounded"] <= season)
         & (team_histories["seasonActiveTill"] >= season)
     ].copy()
+
+
+def _positive_int_or_none(value):
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(numeric) or numeric < 1 or numeric % 1 != 0:
+        return None
+    return int(numeric)
+
+
+def player_movement_reconstruction_rules():
+    """Return the explicit reconstruction rules for nba_player_movement_raw.csv."""
+    return {
+        key: value.copy()
+        for key, value in PLAYER_MOVEMENT_RECONSTRUCTION_RULES.items()
+    }
+
+
+def load_nba_player_movement_source(path=DEFAULT_PLAYER_MOVEMENT_PATH):
+    """Load the immutable raw player-movement source CSV."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"player movement data not found: {path}")
+    if path.suffix.lower() != ".csv":
+        raise ValueError("player movement data must be a CSV file")
+    frame = pd.read_csv(path)
+    missing = set(PLAYER_MOVEMENT_COLUMNS).difference(frame.columns)
+    if missing:
+        raise ValueError(
+            f"player movement data is missing columns: {sorted(missing)}"
+        )
+    if frame.empty:
+        raise ValueError("player movement data must contain at least one row")
+    return frame[PLAYER_MOVEMENT_COLUMNS].copy()
+
+
+def _player_movement_source_payload(row, source_row_number):
+    return {
+        "source_row_number": int(source_row_number),
+        "source_transaction_type": str(row["transaction_type"]).strip(),
+        "source_transaction_date": str(row["transaction_date"]).strip(),
+        "source_transaction_description": str(row["transaction_description"]).strip(),
+        "source_team_id": _positive_int_or_none(row["team_id"]),
+        "source_team_slug": "" if pd.isna(row["team_slug"]) else str(row["team_slug"]).strip(),
+        "source_player_id": _positive_int_or_none(row["player_id"]),
+        "source_player_slug": "" if pd.isna(row["player_slug"]) else str(row["player_slug"]).strip(),
+        "source_additional_sort": "" if pd.isna(row["additional_sort"]) else str(row["additional_sort"]).strip(),
+        "source_groupsort": "" if pd.isna(row["groupsort"]) else str(row["groupsort"]).strip(),
+    }
+
+
+def _player_movement_event(event_id, event_timestamp, team_id, person_id, change_type, rule, source_fields):
+    event = {
+        "event_id": event_id,
+        "event_timestamp": event_timestamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "team_id": int(team_id),
+        "person_id": int(person_id),
+        "change_type": change_type,
+        "source": PLAYER_MOVEMENT_SOURCE,
+        "source_url": PLAYER_MOVEMENT_SOURCE_URL,
+        "confidence_level": PLAYER_MOVEMENT_HIGH_CONFIDENCE,
+        "reconstruction_rule": rule,
+    }
+    event.update(source_fields)
+    return event
+
+
+def normalize_nba_player_movement_records(records):
+    """Normalize nba_player_movement_raw rows into high-confidence roster events plus audit rows."""
+    raw = load_nba_player_movement_source(records) if isinstance(records, (str, Path)) else records.copy()
+    missing = set(PLAYER_MOVEMENT_COLUMNS).difference(raw.columns)
+    if missing:
+        raise ValueError(
+            f"player movement data is missing columns: {sorted(missing)}"
+        )
+    if raw.empty:
+        raise ValueError("player movement data must contain at least one row")
+
+    raw = raw[PLAYER_MOVEMENT_COLUMNS].copy()
+    timestamps = pd.to_datetime(raw["transaction_date"], format="mixed", utc=True, errors="coerce")
+    if timestamps.isna().any():
+        raise ValueError("transaction_date must contain valid timestamps")
+
+    normalized_events = []
+    audit_rows = []
+    for position, row in raw.reset_index(drop=True).iterrows():
+        source_row_number = position + 1
+        source_fields = _player_movement_source_payload(row, source_row_number)
+        event_timestamp = timestamps.iloc[position]
+        transaction_type = source_fields["source_transaction_type"]
+        destination_team_id = source_fields["source_team_id"]
+        person_id = source_fields["source_player_id"]
+        origin_team_id = _positive_int_or_none(row["additional_sort"])
+
+        row_events = []
+        exclusion_reason = ""
+        row_rules = []
+        highest_confidence_level = ""
+
+        if transaction_type == "Signing":
+            if destination_team_id is not None and person_id is not None:
+                row_rules = ["signing_add"]
+                highest_confidence_level = PLAYER_MOVEMENT_HIGH_CONFIDENCE
+                row_events.append(
+                    _player_movement_event(
+                        event_id=f"nba-player-movement-{source_row_number}-add-{destination_team_id}-{person_id}",
+                        event_timestamp=event_timestamp,
+                        team_id=destination_team_id,
+                        person_id=person_id,
+                        change_type="add",
+                        rule="signing_add",
+                        source_fields=source_fields,
+                    )
+                )
+            else:
+                exclusion_reason = "signing row is missing a positive team_id or player_id"
+        elif transaction_type == "Waive":
+            if destination_team_id is not None and person_id is not None:
+                row_rules = ["waive_remove"]
+                highest_confidence_level = PLAYER_MOVEMENT_HIGH_CONFIDENCE
+                row_events.append(
+                    _player_movement_event(
+                        event_id=f"nba-player-movement-{source_row_number}-remove-{destination_team_id}-{person_id}",
+                        event_timestamp=event_timestamp,
+                        team_id=destination_team_id,
+                        person_id=person_id,
+                        change_type="remove",
+                        rule="waive_remove",
+                        source_fields=source_fields,
+                    )
+                )
+            else:
+                exclusion_reason = "waive row is missing a positive team_id or player_id"
+        elif transaction_type == "AwardOnWaivers":
+            if destination_team_id is not None and person_id is not None:
+                row_rules = ["award_on_waivers_add"]
+                highest_confidence_level = PLAYER_MOVEMENT_HIGH_CONFIDENCE
+                row_events.append(
+                    _player_movement_event(
+                        event_id=f"nba-player-movement-{source_row_number}-add-{destination_team_id}-{person_id}",
+                        event_timestamp=event_timestamp,
+                        team_id=destination_team_id,
+                        person_id=person_id,
+                        change_type="add",
+                        rule="award_on_waivers_add",
+                        source_fields=source_fields,
+                    )
+                )
+            else:
+                exclusion_reason = "award-on-waivers row is missing a positive team_id or player_id"
+        elif transaction_type == "Trade":
+            if person_id is None:
+                row_rules = ["trade_non_player_excluded"]
+                exclusion_reason = "trade row has no player_id, so it only documents non-player consideration"
+            elif destination_team_id is None or origin_team_id is None:
+                exclusion_reason = "trade row is missing a positive receiving team_id or origin team id in additional_sort"
+            else:
+                row_rules = ["trade_origin_remove", "trade_destination_add"]
+                highest_confidence_level = PLAYER_MOVEMENT_HIGH_CONFIDENCE
+                row_events.extend(
+                    [
+                        _player_movement_event(
+                            event_id=f"nba-player-movement-{source_row_number}-remove-{origin_team_id}-{person_id}",
+                            event_timestamp=event_timestamp,
+                            team_id=origin_team_id,
+                            person_id=person_id,
+                            change_type="remove",
+                            rule="trade_origin_remove",
+                            source_fields=source_fields,
+                        ),
+                        _player_movement_event(
+                            event_id=f"nba-player-movement-{source_row_number}-add-{destination_team_id}-{person_id}",
+                            event_timestamp=event_timestamp,
+                            team_id=destination_team_id,
+                            person_id=person_id,
+                            change_type="add",
+                            rule="trade_destination_add",
+                            source_fields=source_fields,
+                        ),
+                    ]
+                )
+        elif transaction_type == "ContractConverted":
+            row_rules = ["contract_converted_excluded"]
+            exclusion_reason = "contract conversion changes contract status but does not prove a roster add/remove transition"
+        else:
+            raise ValueError(f"unsupported transaction_type for roster normalization: {transaction_type}")
+
+        audit_rows.append(
+            {
+                **source_fields,
+                "normalized_event_count": int(len(row_events)),
+                "highest_confidence_level": highest_confidence_level,
+                "reconstruction_status": "normalized" if row_events else "excluded",
+                "reconstruction_rules": "|".join(row_rules),
+                "exclusion_reason": exclusion_reason,
+            }
+        )
+        normalized_events.extend(row_events)
+
+    events_frame = pd.DataFrame(normalized_events)
+    if events_frame.empty:
+        raise ValueError("player movement normalization did not produce any roster events")
+    validate_roster_change_events(events_frame)
+    events_frame["event_timestamp"] = pd.to_datetime(
+        events_frame["event_timestamp"], format="mixed", utc=True, errors="raise"
+    )
+    events_frame = events_frame.sort_values(["event_timestamp", "event_id"]).reset_index(drop=True)
+
+    audit_frame = pd.DataFrame(audit_rows)
+    audit_frame["source_transaction_timestamp"] = pd.to_datetime(
+        audit_frame["source_transaction_date"], format="mixed", utc=True, errors="raise"
+    )
+    audit_frame = audit_frame.sort_values(
+        ["source_transaction_timestamp", "source_row_number"]
+    ).reset_index(drop=True)
+    return events_frame, audit_frame
+
+
+def summarize_nba_player_movement_normalization(events, audit_rows):
+    """Return normalization counts and date coverage for the immutable player-movement source."""
+    validated = validate_roster_change_events(events)
+    audit = audit_rows.copy()
+    audit_timestamps = pd.to_datetime(
+        audit["source_transaction_date"], format="mixed", utc=True, errors="raise"
+    )
+    raw_dates = set(audit_timestamps.dt.normalize())
+    event_dates = set(validated["event_timestamp"].dt.normalize())
+    excluded_counts = (
+        audit[audit["reconstruction_status"] == "excluded"]["exclusion_reason"]
+        .value_counts()
+        .to_dict()
+    )
+    raw_type_counts = audit["source_transaction_type"].value_counts().to_dict()
+    return {
+        "raw_row_count": int(len(audit)),
+        "normalized_source_row_count": int((audit["normalized_event_count"] > 0).sum()),
+        "excluded_source_row_count": int((audit["normalized_event_count"] == 0).sum()),
+        "raw_transaction_type_counts": {key: int(value) for key, value in raw_type_counts.items()},
+        "high_confidence_event_count": int(len(validated)),
+        "add_count": int((validated["change_type"] == "add").sum()),
+        "remove_count": int((validated["change_type"] == "remove").sum()),
+        "first_raw_transaction_timestamp": audit_timestamps.min().isoformat(),
+        "last_raw_transaction_timestamp": audit_timestamps.max().isoformat(),
+        "first_event_timestamp": validated["event_timestamp"].min().isoformat(),
+        "last_event_timestamp": validated["event_timestamp"].max().isoformat(),
+        "raw_unique_transaction_dates": int(len(raw_dates)),
+        "event_unique_transaction_dates": int(len(event_dates)),
+        "missing_raw_transaction_dates_from_events": [
+            timestamp.strftime("%Y-%m-%d")
+            for timestamp in sorted(raw_dates.difference(event_dates))
+        ],
+        "excluded_rows_by_reason": {key: int(value) for key, value in excluded_counts.items()},
+        "reconstruction_rules": player_movement_reconstruction_rules(),
+    }
 
 
 def load_player_registry(path=DEFAULT_PLAYERS_PATH):
@@ -429,6 +744,11 @@ def main(argv=None):
         help="Validate a CSV of timestamped roster-change events and print a summary JSON.",
     )
     parser.add_argument(
+        "--normalize-player-movement",
+        type=Path,
+        help="Normalize data/raw/nba_player_movement_raw.csv into high-confidence roster_change_events and an audit CSV.",
+    )
+    parser.add_argument(
         "--seasons",
         nargs="+",
         type=int,
@@ -447,12 +767,38 @@ def main(argv=None):
         default=ROOT / "data" / "processed" / "bbr_roster_changes_unresolved_2022_2025.csv",
         help="Where to write unresolved transaction rows that could not be mapped to repo IDs.",
     )
+    parser.add_argument(
+        "--output-player-movement-events",
+        type=Path,
+        default=DEFAULT_PLAYER_MOVEMENT_EVENTS_PATH,
+        help="Where to write normalized high-confidence roster events from nba_player_movement_raw.csv.",
+    )
+    parser.add_argument(
+        "--output-player-movement-audit",
+        type=Path,
+        default=DEFAULT_PLAYER_MOVEMENT_AUDIT_PATH,
+        help="Where to write the source-row audit table for nba_player_movement_raw.csv normalization.",
+    )
     args = parser.parse_args(argv)
 
     if args.validate is not None:
         events = load_roster_change_events(args.validate)
         summary = summarize_roster_change_events(events)
         print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.normalize_player_movement is not None:
+        events, audit = normalize_nba_player_movement_records(
+            args.normalize_player_movement
+        )
+        summary = summarize_nba_player_movement_normalization(events, audit)
+        args.output_player_movement_events.parent.mkdir(parents=True, exist_ok=True)
+        args.output_player_movement_audit.parent.mkdir(parents=True, exist_ok=True)
+        events.to_csv(args.output_player_movement_events, index=False)
+        audit.to_csv(args.output_player_movement_audit, index=False)
+        print(json.dumps(summary, indent=2))
+        print(f"events_path={args.output_player_movement_events}")
+        print(f"audit_path={args.output_player_movement_audit}")
         return 0
 
     events, unresolved = fetch_basketball_reference_roster_changes(seasons=tuple(args.seasons))

@@ -35,6 +35,37 @@ that holdout on the same leakage-safe chronology. The project continues to prior
 measured prediction quality and labeled descriptive diagnostics over speculative
 causal claims.
 
+Implementation update (2026-08-13): `src/roster_change_data.py` now includes a
+deterministic normalization pipeline for the immutable
+`data/raw/nba_player_movement_raw.csv` source. The new path emits only
+high-confidence `roster_change_events` for direct signings, waives, waiver
+claims, and player-specific trades, preserves the original source fields in the
+normalized output and a separate audit table, assigns an explicit confidence
+level and reconstruction rule to each emitted event, and intentionally excludes
+contract conversions plus non-player trade consideration rows rather than
+inventing unsupported roster transitions.
+
+What now works: `.\.venv\Scripts\python src\roster_change_data.py
+--normalize-player-movement data/raw/nba_player_movement_raw.csv` writes a
+validated high-confidence roster-event CSV plus an audit CSV without changing
+the validated production prediction model. The verified current-source summary
+is 9,746 raw rows, 9,102 normalized source rows, 10,374 high-confidence
+events, and 1,978 covered transaction dates out of 1,979 raw dates; the only
+uncovered raw date is `2023-09-14`, which contains only a contract-conversion
+row that the pipeline intentionally excludes.
+
+Remaining issue: the normalized file is still a descriptive roster-event source,
+not evidence that roster transitions improve the production model or establish a
+causal player-impact claim. `remove` events remain unsupported by the current
+benchmark path in `src/player_impact.py` and should continue to be treated as
+audit-ready context rather than a live model feature.
+
+Exact next step: keep the current production prediction engine unchanged and, if
+roster-event benchmarking continues, feed only the normalized high-confidence
+output from `nba_player_movement_raw.csv` through the existing descriptive
+`src/player_impact.py --roster-events PATH` validation path to measure whether
+the larger event sample improves the same chronological evaluation.
+
 Exact next step: keep the current best-performing prediction engine as the
 production default and only revisit the feature/model layer if a single,
 well-justified candidate materially improves the same chronological holdout. In the
@@ -84,16 +115,25 @@ estimate, and prints a JSON summary without needing to run the full benchmark
 pipeline. The output remains clearly labeled as a descriptive association estimate,
 not a causal roster/trade projection.
 
+Implementation update (2026-08-13): a minimal single-player scenario-analysis layer
+was added at `src/player_scenario.py`. It keeps the production default as the
+validated `elo_boosted_ensemble` prediction path and appends the descriptive
+player-impact estimate as an explanatory diagnostic only. The key rule is explicit:
+no player-to-team feature conversion is attempted because the validated model's
+feature matrix is built from team-level rolling signals and Elo deltas, and the
+player-impact estimate is not measured in the same feature space.
+
 What now works: historical database rebuild, feature engineering, model-ready
 outputs, leakage-safe player-impact diagnostics, direct single-player impact
-estimates via `src/player_impact.py --person-id ID`, external roster-change schema
-validation, and the existing CLI benchmark path for `--roster-events` all remain
-operational and validated.
+estimates via `src/player_impact.py --person-id ID`, descriptive scenario analysis
+via `src/player_scenario.py` without altering the production prediction path,
+external roster-change schema validation, and the existing CLI benchmark path for
+`--roster-events` all remain operational and validated.
 
 Exact next step: keep the current model layer as the validated production baseline,
-use the new single-player CLI as the user-facing impact diagnostic, and only add
-another feature or model candidate if it materially improves the same
-chronological holdout without violating the no-leakage rules.
+use the new single-player scenario and impact diagnostics as the user-facing
+analysis layer, and only add another feature or model candidate if it materially
+improves the same chronological holdout without violating the no-leakage rules.
 
 Remaining issue: the accepted roster-change source is still a small curated sample,
 not a broad season-spanning independent roster archive. The roster benchmark should

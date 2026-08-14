@@ -42,7 +42,7 @@ def load_player_history(connection, person_id, before=None):
     """
     parameters = [person_id]
     if before is not None:
-        query += " AND gameDateTimeEst < ?"
+        query += " AND games.gameDateTimeEst < ?"
         parameters.append(pd.Timestamp(before).strftime("%Y-%m-%d %H:%M:%S"))
     history = pd.read_sql_query(query, connection, params=parameters)
     if not history.empty:

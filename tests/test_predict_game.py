@@ -15,6 +15,7 @@ from src.main import (
     resolve_team_name_to_id,
     validate_prediction_probability,
 )
+from src.player_scenario import analyze_single_player_scenario
 
 
 def test_build_prediction_row_uses_home_minus_away_differences():
@@ -115,6 +116,41 @@ def test_parse_args_accepts_human_friendly_team_names():
     assert args.away_team_id is None
     assert args.home_team == "Boston Celtics"
     assert args.away_team == "Los Angeles Lakers"
+
+
+def test_analyze_single_player_scenario_keeps_model_default_and_marks_feature_translation_unsupported(monkeypatch):
+    monkeypatch.setattr(
+        "src.player_scenario.predict_matchup",
+        lambda **kwargs: {
+            "model": "elo_boosted_ensemble",
+            "home_win_probability": 0.68,
+            "away_win_probability": 0.32,
+            "home_team_prediction": "favorite",
+            "game_date": "2026-04-12",
+        },
+    )
+    monkeypatch.setattr(
+        "src.player_scenario.summarize_player_impact",
+        lambda person_id, before=None, window=10: {
+            "person_id": person_id,
+            "prior_games": 6,
+            "estimated_net_rating_change": 1.5,
+            "direction": "addition",
+        },
+    )
+
+    result = analyze_single_player_scenario(
+        home_team_id=1610612738,
+        away_team_id=1610612747,
+        person_id=42,
+        game_date="2026-04-12",
+    )
+
+    assert result["model"] == "elo_boosted_ensemble"
+    assert result["base_prediction"]["home_win_probability"] == 0.68
+    assert result["feature_translation"]["status"] == "unsupported"
+    assert "not translated" in result["scenario_summary"].lower()
+    assert result["player_impact"]["person_id"] == 42
 
 
 def test_build_matchup_summary_mentions_probability_and_recent_form():

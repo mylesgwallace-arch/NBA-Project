@@ -121,7 +121,9 @@ only — it adds no new modeling functionality.
 
 ```powershell
 .\.venv\Scripts\python src\player_impact.py --person-id 2
+.\.venv\Scripts\python src\player_scenario.py --home-team "Boston Celtics" --away-team "Los Angeles Lakers" --person-id 2 --game-date 2026-04-12
 .\.venv\Scripts\python src\roster_change_data.py --validate data/raw/roster_change_events_valid.csv
+.\.venv\Scripts\python src\roster_change_data.py --normalize-player-movement data/raw/nba_player_movement_raw.csv
 .\.venv\Scripts\python src\player_impact.py --validate-roster-events data/raw/roster_change_events_valid.csv
 .\.venv\Scripts\python src\player_impact.py
 .\.venv\Scripts\python src\player_impact.py --roster-events data/raw/roster_change_events_valid.csv
@@ -130,11 +132,22 @@ only — it adds no new modeling functionality.
 `src/player_impact.py --person-id ID` computes a descriptive, assumption-labeled
 single-player impact estimate from that player's recent regular-season history,
 using the same minutes-weighted net-rating method validated in the repository.
+`src/player_scenario.py` wraps that diagnostic around the existing validated
+`elo_boosted_ensemble` matchup prediction but does not translate the player-impact
+estimate into model features: it explicitly records the unsupported conversion as
+an explanatory limitation rather than inventing a new predictive input.
 `src/player_impact.py --validate-roster-events PATH` and
 `src/roster_change_data.py --validate PATH` validate an independent roster-change
 CSV against the project contract and print a JSON summary with counts,
 team/person coverage, and the event time window. This is the pre-flight check
 before running `src/player_impact.py --roster-events PATH`.
+`src/roster_change_data.py --normalize-player-movement data/raw/nba_player_movement_raw.csv`
+deterministically transforms the immutable raw movement extract into
+high-confidence `roster_change_events` plus a row-level audit CSV. The current
+rules emit direct `add`/`remove` events for signings, waives, waiver claims,
+and player-specific trades; they intentionally exclude contract conversions and
+trade rows without player ids because those rows do not prove a roster
+add/remove transition.
 
 This produces `models/player_impact_metrics.json`, an association-diagnostic
 report (not a causal projection) documented in detail in
