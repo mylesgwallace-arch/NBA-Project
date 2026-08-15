@@ -13,6 +13,7 @@ from src.main import (
     parse_args,
     predict_matchup,
     resolve_team_name_to_id,
+    run_season_simulation,
     validate_prediction_probability,
 )
 from src.player_scenario import analyze_single_player_scenario
@@ -116,6 +117,91 @@ def test_parse_args_accepts_human_friendly_team_names():
     assert args.away_team_id is None
     assert args.home_team == "Boston Celtics"
     assert args.away_team == "Los Angeles Lakers"
+
+
+def test_parse_args_accepts_season_simulation_mode():
+    args = parse_args(["--simulate-season", "2025", "--simulations", "500"])
+
+    assert args.simulate_season == 2025
+    assert args.simulations == 500
+    assert args.home_team_id is None
+    assert args.away_team_id is None
+
+
+def test_parse_args_rejects_missing_team_when_simulate_not_requested():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        parse_args(["--game-date", "2026-04-12"])
+
+
+def test_run_season_simulation_returns_standings_projection(monkeypatch):
+    import pandas as pd
+
+    fake_probabilities = pd.DataFrame(
+        [
+            {
+                "gameId": 1,
+                "gameDateTimeEst": "2025-10-22 19:00:00",
+                "season": 2025,
+                "homeTeamId": 1610612738,
+                "awayTeamId": 1610612747,
+                "target": 1,
+                "home_win_probability": 0.5,
+            }
+        ]
+    )
+
+    monkeypatch.setattr(
+        "src.main.load_pregame_probabilities",
+        lambda **kwargs: fake_probabilities,
+    )
+
+    result = run_season_simulation(
+        season=2025, n_simulations=50, random_state=7
+    )
+
+    assert result["model"] == "elo_boosted_ensemble"
+    assert result["mode"] == "season_simulation"
+    assert result["leakage_safe"] is True
+    assert result["projection"]["season"] == 2025
+    assert result["projection"]["n_simulations"] == 50
+    assert len(result["projection"]["projected_standings"]) == 2
+
+
+def test_main_simulate_season_mode_prints_projection(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "src.main.run_season_simulation",
+        lambda season, n_simulations=1000, random_state=42: {
+            "model": "elo_boosted_ensemble",
+            "mode": "season_simulation",
+            "leakage_safe": True,
+            "projection": {
+                "season": season,
+                "n_simulations": n_simulations,
+                "projected_standings": [
+                    {
+                        "teamId": 1610612738,
+                        "conference": "East",
+                        "mean_wins": 57.1,
+                        "direct_playoff_probability": 1.0,
+                    }
+                ],
+            },
+        },
+    )
+
+    exit_code = __import__("src.main", fromlist=["main"]).main([
+        "--simulate-season",
+        "2025",
+        "--simulations",
+        "50",
+    ])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert '"mode": "season_simulation"' in captured.out
+    assert '"season": 2025' in captured.out
 
 
 def test_analyze_single_player_scenario_keeps_model_default_and_marks_feature_translation_unsupported(monkeypatch):

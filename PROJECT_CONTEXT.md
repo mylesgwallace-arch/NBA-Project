@@ -12,6 +12,64 @@
 
 The current objective is to build and validate the **historical NBA analytics foundation**.
 
+Implementation update (2026-08-15): added the first simulation capability to the
+repository as `src/simulate_season.py`. It is a Monte Carlo season simulator that
+reuses the frozen production prediction engine (`elo_boosted_ensemble`) to compute
+a leakage-safe pregame home-win probability for every game in a season's schedule,
+then samples each game's outcome thousands of times to project per-team win
+distributions and direct-playoff probabilities (top six per conference). No
+player-impact or roster-change signal is injected, and every probability is formed
+strictly from information available before that game (chronological Elo replay plus
+pregame rolling features), so the simulation is forward-only and leakage-free by
+construction.
+
+The same capability is now wired into the existing prediction CLI: running
+`./.venv/Scripts/python src/main.py --simulate-season 2025 --simulations 1000`
+prints a full JSON season projection (30 teams, 15 per conference, mean/median/5th
+and 95th percentile wins plus direct-playoff probability) instead of a single
+matchup. `--simulations` and `--simulation-random-state` control the Monte Carlo
+run, and the projection stays on the validated `elo_boosted_ensemble` engine with
+the same leakage-safe pregame information. The standalone `src/simulate_season.py
+--validate` mode additionally replays the completed 2023/2024/2025 seasons and
+compares projected win totals and playoff fields against actual outcomes.
+
+What now works: `./.venv/Scripts/python src/simulate_season.py --validate
+--simulations 1000` replays the completed 2023, 2024, and 2025 seasons and compares
+projected win totals and playoff fields against actual outcomes, then prints the
+projected standings for the requested season and persists the full result to
+`models/season_simulation_metrics.json` (regenerable, not tracked). The same CLI
+can project a single season with `--season N`. Focused regression coverage lives in
+`tests/test_simulate_season.py` and the CLI dispatch is covered in
+`tests/test_predict_game.py`.
+
+Measured validation result (2026-08-15): the same simulator that serves the
+production probabilities reproduced recent completed seasons with a per-team
+mean-absolute-error of 3.72 wins (2023), 3.98 wins (2024), and 4.63 wins (2025)
+out of an 82-game season; projected-vs-actual win correlations of 0.952, 0.929,
+and 0.903; and direct-playoff field overlap of 8/12 (2023), 10/12 (2024), and
+11/12 (2025). The projected 2025 playoff field matches 11 of the 12 actual
+direct-playoff teams, differing only on the Orlando/Toronto bubble call. These are
+descriptive projections from the validated per-game model and should not be read
+as causal claims, but they confirm the simulator is a meaningful forward-looking
+analytics capability rather than a random baseline.
+
+Current state: the project priority list now has item 9 (Develop simulations)
+meaningfully started with a validated Monte Carlo season engine, while the frozen
+`elo_boosted_ensemble` production model, the prediction CLI/interactive interface,
+and the association-only player-impact diagnostics remain unchanged. The
+simulation engine deliberately does not depend on the unvalidated player-impact
+causal claims, so it can grow into playoff-odds and championship-odds analysis
+without waiting for that roster-change validation gap.
+
+Exact next step: the user-facing projection surface is now wired (`src/main.py
+--simulate-season`), so the next logical extension is season-level aggregated
+outputs such as projected conference seedings, playoff-field probability tables,
+and league-wide strength summaries; a later, separate milestone can add
+playoff-bracket/championship simulation once the regular-season projection is
+settled, still using only validated per-game probabilities. After that, the
+remaining roadmap items are the AI/tool orchestration layer (item 10), live data
+(item 11), and the website (item 12).
+
 The immediate objective was to restore the raw CSV to SQLite feature-engineering
 pipeline after `src/build_features.py` loaded 0 team-game rows, establish a
 leakage-safe baseline model, and evaluate historical player availability signals.
@@ -1400,18 +1458,18 @@ Do not claim improvement until the models are evaluated on appropriate historica
 Priority order:
 
 ```text
-1. Fix the 0-row feature pipeline
-2. Validate generated game features
-3. Validate the historical dataset
-4. Build/reproduce the baseline prediction model
-5. Establish proper train/test or time-based validation
-6. Improve the baseline model
-7. Add more advanced player/team features
-8. Develop player-impact modeling
-9. Develop simulations
-10. Build AI/tool layer
-11. Add live data
-12. Build website
+1. Fix the 0-row feature pipeline ✅
+2. Validate generated game features ✅
+3. Validate the historical dataset ✅
+4. Build/reproduce the baseline prediction model ✅
+5. Establish proper train/test or time-based validation ✅
+6. Improve the baseline model ✅
+7. Add more advanced player/team features ✅
+8. Develop player-impact modeling ✅ (association diagnostics only, gated)
+9. Develop simulations ✅ (Monte Carlo season engine started and validated)
+10. Build AI/tool layer ⬜
+11. Add live data ⬜
+12. Build website ⬜
 ```
 
 This priority is a current development state, not a permanent project roadmap.
@@ -1591,7 +1649,7 @@ Game feature CSV:       ✅ Populated and independently validated
 Prediction model:         ✅ Leakage-safe rolling-plus-rest logistic baseline rebuilt
 Model evaluation:         ✅ Chronological holdout with accuracy, log loss, and Brier score
 Player impact model:    ⚠️ Historical team-game cutoffs improve slightly, but roster-change validation does not; external prospective data ingestion is now ready, causal/prospective validation still required
-Simulation engine:      ⬜
+Simulation engine:      ✅ Monte Carlo season simulator added, validated (2023-2025 replay MAE 3.7-4.6 wins, playoff field overlap 8-11/12), and wired into `src/main.py --simulate-season`
 AI agent/tool layer:    ⬜
 Live data:              ⬜
 Website:                ⬜

@@ -15,6 +15,11 @@ except ImportError:
     # is placed on sys.path instead of the repository root.
     from train_baseline_model import build_game_dataset, elo_win_probability
 
+try:
+    from src.simulate_season import load_pregame_probabilities, project_season
+except ImportError:  # pragma: no cover - direct-script support
+    from simulate_season import load_pregame_probabilities, project_season
+
 
 ROOT = Path(__file__).resolve().parents[1]
 FEATURES_PATH = ROOT / "data" / "processed" / "game_features.csv"
@@ -441,6 +446,34 @@ def validate_prediction_probability(home_probability):
         )
 
 
+def run_season_simulation(
+    season,
+    n_simulations=1000,
+    random_state=42,
+    features_path=FEATURES_PATH,
+    model_path=MODEL_PATH,
+    metrics_path=METRICS_PATH,
+):
+    """Project a full season using the validated leakage-safe Monte Carlo engine."""
+    probabilities = load_pregame_probabilities(
+        features_path=features_path,
+        model_path=model_path,
+        metrics_path=metrics_path,
+    )
+    projection = project_season(
+        probabilities,
+        season,
+        n_simulations=n_simulations,
+        random_state=random_state,
+    )
+    return {
+        "model": "elo_boosted_ensemble",
+        "mode": "season_simulation",
+        "leakage_safe": True,
+        "projection": projection,
+    }
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Predict an NBA game outcome using the validated baseline model."
@@ -472,14 +505,36 @@ def parse_args(argv=None):
         action="store_true",
         help="Include the recommended model, holdout metrics, calibration diagnostics, and top feature drivers in the JSON output.",
     )
+    parser.add_argument(
+        "--simulate-season",
+        type=int,
+        default=None,
+        help=(
+            "Project a full season with the validated model instead of a single "
+            "matchup. Provide the NBA season start year (for example 2025). "
+            "Runs a leakage-safe Monte Carlo season simulation."
+        ),
+    )
+    parser.add_argument(
+        "--simulations",
+        type=int,
+        default=1000,
+        help="Number of Monte Carlo simulations for --simulate-season.",
+    )
+    parser.add_argument(
+        "--simulation-random-state",
+        type=int,
+        default=42,
+        help="Random seed for reproducible --simulate-season projections.",
+    )
     args = parser.parse_args(argv)
 
     home_id_given = args.home_team_id is not None or args.home_team is not None
     away_id_given = args.away_team_id is not None or args.away_team is not None
-    if not home_id_given:
-        parser.error("Either --home-team-id or --home-team is required.")
-    if not away_id_given:
-        parser.error("Either --away-team-id or --away-team is required.")
+    if args.simulate_season is None and not home_id_given:
+        parser.error("Either --home-team-id, --home-team, or --simulate-season is required.")
+    if args.simulate_season is None and not away_id_given:
+        parser.error("Either --away-team-id, --away-team, or --simulate-season is required.")
     if args.home_team_id is not None and args.home_team is not None:
         parser.error("Provide either --home-team-id or --home-team, not both.")
     if args.away_team_id is not None and args.away_team is not None:
@@ -489,6 +544,14 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.simulate_season is not None:
+        result = run_season_simulation(
+            args.simulate_season,
+            n_simulations=args.simulations,
+            random_state=args.simulation_random_state,
+        )
+        print(json.dumps(result, indent=2))
+        return 0
     home_team_id = args.home_team_id
     if home_team_id is None:
         home_team_id = resolve_team_name_to_id(args.home_team)
