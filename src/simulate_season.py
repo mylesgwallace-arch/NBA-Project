@@ -187,7 +187,13 @@ def conference_of(team_id):
 
 
 def summarize_team_wins(wins, teams, probabilities=None, season=None):
-    """Build a per-team win-distribution summary for one simulated season."""
+    """Build a per-team win-distribution summary for one simulated season.
+
+    When conference ranks are available (the normal ``project_season`` path),
+    each team also gets its projected conference seed (mean/median across
+    simulations) and the probability of finishing at each exact seed slot
+    ``p_seed_1`` .. ``p_seed_6`` plus ``out_of_playoffs_probability``.
+    """
     ranks = (
         _conference_rank_matrix(wins, teams)
         if probabilities is not None and season is not None
@@ -198,21 +204,35 @@ def summarize_team_wins(wins, teams, probabilities=None, season=None):
         team_wins = wins[:, index]
         conference = conference_of(team_id)
         playoff_probability = None
+        seed_probabilities = None
+        mean_conference_seed = None
+        median_conference_seed = None
         if ranks is not None:
-            playoff_probability = float(
-                (ranks[:, index] <= DIRECT_PLAYOFF_SEEDS).mean()
-            )
-        rows.append(
-            {
-                "teamId": int(team_id),
-                "conference": conference,
-                "mean_wins": float(team_wins.mean()),
-                "median_wins": float(np.median(team_wins)),
-                "p5_wins": float(np.percentile(team_wins, 5)),
-                "p95_wins": float(np.percentile(team_wins, 95)),
-                "direct_playoff_probability": playoff_probability,
+            team_ranks = ranks[:, index]
+            playoff_probability = float((team_ranks <= DIRECT_PLAYOFF_SEEDS).mean())
+            seed_probabilities = {
+                f"p_seed_{seed}": float((team_ranks == seed).mean())
+                for seed in range(1, DIRECT_PLAYOFF_SEEDS + 1)
             }
-        )
+            seed_probabilities["out_of_playoffs_probability"] = float(
+                (team_ranks > DIRECT_PLAYOFF_SEEDS).mean()
+            )
+            mean_conference_seed = float(team_ranks.mean())
+            median_conference_seed = float(np.median(team_ranks))
+        row = {
+            "teamId": int(team_id),
+            "conference": conference,
+            "mean_wins": float(team_wins.mean()),
+            "median_wins": float(np.median(team_wins)),
+            "p5_wins": float(np.percentile(team_wins, 5)),
+            "p95_wins": float(np.percentile(team_wins, 95)),
+            "direct_playoff_probability": playoff_probability,
+            "mean_conference_seed": mean_conference_seed,
+            "median_conference_seed": median_conference_seed,
+        }
+        if seed_probabilities is not None:
+            row.update(seed_probabilities)
+        rows.append(row)
     summary = pd.DataFrame(rows).sort_values(
         ["conference", "mean_wins"], ascending=[True, False]
     )
@@ -245,6 +265,61 @@ def _conference_rank_matrix(wins, teams):
     return ranks
 
 
+def build_seedings_table(summary, n_seeds=DIRECT_PLAYOFF_SEEDS):
+    """Return the most likely team for each conference seed slot.
+
+    For each conference and each direct-playoff seed slot 1..n_seeds, find the
+    team with the highest probability of finishing at exactly that seed. The
+    table is the "projected playoff field": the expected occupants of the
+    twelve direct-playoff seeds.
+    """
+    rows = []
+    for conference in ("East", "West"):
+        conference_teams = summary[summary["conference"] == conference]
+        # A conference with fewer than n_seeds teams cannot fill every slot.
+        n_seed_slots = min(n_seeds, len(conference_teams))
+        for seed in range(1, n_seed_slots + 1):
+            column = f"p_seed_{seed}"
+            if column not in conference_teams.columns:
+                continue
+            best_index = conference_teams[column].idxmax()
+            best = conference_teams.loc[best_index]
+            rows.append(
+                {
+                    "conference": conference,
+                    "seed": seed,
+                    "teamId": int(best["teamId"]),
+                    "probability": float(best[column]),
+                }
+            )
+    return rows
+
+
+def build_league_summary(summary):
+    """Return league-wide aggregate strength statistics from a season summary."""
+    mean_wins = summary["mean_wins"]
+    conference_means = (
+        summary.groupby("conference")["mean_wins"].mean().to_dict()
+    )
+    return {
+        "n_teams": int(len(summary)),
+        "league_mean_wins": float(mean_wins.mean()),
+        "league_median_wins": float(mean_wins.median()),
+        "best_team": {
+            "teamId": int(summary.loc[mean_wins.idxmax(), "teamId"]),
+            "mean_wins": float(mean_wins.max()),
+        },
+        "worst_team": {
+            "teamId": int(summary.loc[mean_wins.idxmin(), "teamId"]),
+            "mean_wins": float(mean_wins.min()),
+        },
+        "conference_mean_wins": {
+            str(conference): float(value)
+            for conference, value in conference_means.items()
+        },
+    }
+
+
 def project_season(
     probabilities,
     season,
@@ -262,6 +337,8 @@ def project_season(
         "random_state": int(random_state),
         "teams": int(len(teams)),
         "projected_standings": summary.to_dict(orient="records"),
+        "projected_seedings": build_seedings_table(summary),
+        "league_summary": build_league_summary(summary),
     }
 
 
@@ -468,6 +545,12 @@ def main(argv=None):
             f"  {row['conference']:4s} {row['teamId']} "
             f"mean={row['mean_wins']:.1f} "
             f"[{row['p5_wins']:.0f}-{row['p95_wins']:.0f}]{playoff}"
+        )
+    print("Projected direct-playoff field (most likely team per seed):")
+    for slot in projection["projected_seedings"]:
+        print(
+            f"  {slot['conference']:4s} seed {slot['seed']}: "
+            f"{slot['teamId']} ({slot['probability']:.1%})"
         )
     print(f"Saved simulation metrics to {SIMULATION_METRICS_PATH}")
     return 0

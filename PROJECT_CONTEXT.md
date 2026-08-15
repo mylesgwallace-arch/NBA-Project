@@ -12,63 +12,68 @@
 
 The current objective is to build and validate the **historical NBA analytics foundation**.
 
-Implementation update (2026-08-15): added the first simulation capability to the
-repository as `src/simulate_season.py`. It is a Monte Carlo season simulator that
-reuses the frozen production prediction engine (`elo_boosted_ensemble`) to compute
-a leakage-safe pregame home-win probability for every game in a season's schedule,
-then samples each game's outcome thousands of times to project per-team win
-distributions and direct-playoff probabilities (top six per conference). No
-player-impact or roster-change signal is injected, and every probability is formed
-strictly from information available before that game (chronological Elo replay plus
-pregame rolling features), so the simulation is forward-only and leakage-free by
-construction.
+Implementation update (2026-08-15): built the deterministic analytical tool
+layer and orchestration architecture (roadmap item 10) underneath the future
+natural-language AI interface. The new `src/tools.py` exposes the project's
+validated capabilities as named, parameterized, deterministic tools with a
+single routing entry point (`execute_tool`) that returns structured result
+envelopes carrying the operation performed, the model/data that produced it,
+assumptions, limitations, and the actual result. No new model was trained, no
+prediction or simulation logic was duplicated, and the frozen
+`elo_boosted_ensemble` production path remains the only prediction route.
 
-The same capability is now wired into the existing prediction CLI: running
-`./.venv/Scripts/python src/main.py --simulate-season 2025 --simulations 1000`
-prints a full JSON season projection (30 teams, 15 per conference, mean/median/5th
-and 95th percentile wins plus direct-playoff probability) instead of a single
-matchup. `--simulations` and `--simulation-random-state` control the Monte Carlo
-run, and the projection stays on the validated `elo_boosted_ensemble` engine with
-the same leakage-safe pregame information. The standalone `src/simulate_season.py
---validate` mode additionally replays the completed 2023/2024/2025 seasons and
-compares projected win totals and playoff fields against actual outcomes.
+Available tools (discoverable via `python src/tools.py --list-tools`):
+`predict_matchup` (frozen production game prediction), `simulate_season` (full
+Monte Carlo season projection with standings, seedings, playoff field, league
+summary), `team_projection` (one team's wins/seed/playoff odds),
+`player_impact` (association-only player diagnostic with confidence label),
+`player_scenario` (production probability + association-only player estimate),
+`team_record` (factual regular-season W/L from the database), `head_to_head`
+(factual regular-season series record), and `resolve_team_name` (teamId
+lookup). Every tool accepts team names or numeric teamIds, validates
+parameters against its schema, and returns the same structured envelope shape
+on success, on invalid requests (`status: "error"`), and when data is
+unavailable or low-confidence (`status: "unavailable"`).
 
-What now works: `./.venv/Scripts/python src/simulate_season.py --validate
---simulations 1000` replays the completed 2023, 2024, and 2025 seasons and compares
-projected win totals and playoff fields against actual outcomes, then prints the
-projected standings for the requested season and persists the full result to
-`models/season_simulation_metrics.json` (regenerable, not tracked). The same CLI
-can project a single season with `--season N`. Focused regression coverage lives in
-`tests/test_simulate_season.py` and the CLI dispatch is covered in
-`tests/test_predict_game.py`.
+Architectural decisions: (1) the orchestrator is purely deterministic and never
+fabricates an answer; a future LLM will select a tool name + parameters and
+interpret the returned envelope. (2) Model integrity is preserved by routing
+`predict_matchup`/`player_scenario` through the existing validated functions
+and reporting the served model in both the envelope and the inner result.
+(3) Player-impact results are strictly association-only: the envelope carries
+explicit "NOT a causal forecast" limitations, a low-confidence flag when fewer
+than five prior games exist, and an `unavailable` status when no prior
+appearances exist. (4) The pregame-probability cache is reused across
+simulation tool calls in one process to avoid re-running the chronological Elo
+replay repeatedly. (5) The layer is modular: no LLM-specific logic is added to
+`src/main.py`, `src/simulate_season.py`, or `src/player_impact.py`.
 
-Measured validation result (2026-08-15): the same simulator that serves the
-production probabilities reproduced recent completed seasons with a per-team
-mean-absolute-error of 3.72 wins (2023), 3.98 wins (2024), and 4.63 wins (2025)
-out of an 82-game season; projected-vs-actual win correlations of 0.952, 0.929,
-and 0.903; and direct-playoff field overlap of 8/12 (2023), 10/12 (2024), and
-11/12 (2025). The projected 2025 playoff field matches 11 of the 12 actual
-direct-playoff teams, differing only on the Orlando/Toronto bubble call. These are
-descriptive projections from the validated per-game model and should not be read
-as causal claims, but they confirm the simulator is a meaningful forward-looking
-analytics capability rather than a random baseline.
+Validation: 17 new focused tests in `tests/test_tools.py` cover routing, schema
+validation, structured envelopes, model preservation, unavailable/low-
+confidence player diagnostics, and the factual database tools (using a
+temporary SQLite database). The full fast suite is 88 tests passing. Real-data
+CLI checks: `predict_matchup` returns the frozen `elo_boosted_ensemble`
+probability (e.g. Celtics 69.3% over Lakers); `team_record` returns OKC's
+actual 2025 record (64-18); `head_to_head` returns the 2025 Celtics-Lakers
+series (2-0 Celtics); `team_projection` returns OKC 63.8 mean wins with 97.5%
+West seed-1 probability; `player_impact` returns the association-only Steven
+Adams diagnostic at moderate confidence; unknown tools, missing parameters, and
+players without history all return structured error/unavailable envelopes.
 
-Current state: the project priority list now has item 9 (Develop simulations)
-meaningfully started with a validated Monte Carlo season engine, while the frozen
-`elo_boosted_ensemble` production model, the prediction CLI/interactive interface,
-and the association-only player-impact diagnostics remain unchanged. The
-simulation engine deliberately does not depend on the unvalidated player-impact
-causal claims, so it can grow into playoff-odds and championship-odds analysis
-without waiting for that roster-change validation gap.
+Current state: roadmap item 10 is meaningfully complete. The deterministic tool
+layer is the stable programmatic surface the natural-language layer will sit
+on, and every exposed capability routes to already-validated code. The frozen
+`elo_boosted_ensemble` production model, the prediction CLI/interactive
+interface, the season simulator, and the association-only player-impact
+diagnostics are unchanged.
 
-Exact next step: the user-facing projection surface is now wired (`src/main.py
---simulate-season`), so the next logical extension is season-level aggregated
-outputs such as projected conference seedings, playoff-field probability tables,
-and league-wide strength summaries; a later, separate milestone can add
-playoff-bracket/championship simulation once the regular-season projection is
-settled, still using only validated per-game probabilities. After that, the
-remaining roadmap items are the AI/tool orchestration layer (item 10), live data
-(item 11), and the website (item 12).
+Exact next step: the next milestone (item 11, the natural-language AI layer) is
+to build the thin conversational/orchestration interface on top of
+`src/tools.py` -- map a user question to a tool call, dispatch through
+`execute_tool`, and render the structured envelope as a plain-language answer
+while surfacing assumptions/limitations. That layer must keep all values
+coming from the deterministic tools rather than the language model's own
+knowledge.
 
 The immediate objective was to restore the raw CSV to SQLite feature-engineering
 pipeline after `src/build_features.py` loaded 0 team-game rows, establish a
@@ -1466,8 +1471,9 @@ Priority order:
 6. Improve the baseline model ✅
 7. Add more advanced player/team features ✅
 8. Develop player-impact modeling ✅ (association diagnostics only, gated)
-9. Develop simulations ✅ (Monte Carlo season engine started and validated)
-10. Build AI/tool layer ⬜
+9. Develop simulations ✅ (Monte Carlo season engine + projected seedings/playoff field/league summary)
+10. Build AI/tool layer ✅ (deterministic tool registry + orchestration routing in src/tools.py)
+11. Add live data ⬜
 11. Add live data ⬜
 12. Build website ⬜
 ```
@@ -1649,8 +1655,9 @@ Game feature CSV:       ✅ Populated and independently validated
 Prediction model:         ✅ Leakage-safe rolling-plus-rest logistic baseline rebuilt
 Model evaluation:         ✅ Chronological holdout with accuracy, log loss, and Brier score
 Player impact model:    ⚠️ Historical team-game cutoffs improve slightly, but roster-change validation does not; external prospective data ingestion is now ready, causal/prospective validation still required
-Simulation engine:      ✅ Monte Carlo season simulator added, validated (2023-2025 replay MAE 3.7-4.6 wins, playoff field overlap 8-11/12), and wired into `src/main.py --simulate-season`
-AI agent/tool layer:    ⬜
+Simulation engine:      ✅ Monte Carlo season simulator validated (2023-2025 replay MAE 3.7-4.6 wins, playoff field overlap 8-11/12) with projected seedings, playoff field, and league summary wired into both CLIs
+Tool/orchestration:     ✅ deterministic tool registry (predict_matchup, simulate_season, team_projection, player_impact, player_scenario, team_record, head_to_head, resolve_team_name) with structured envelopes in src/tools.py
+AI agent/tool layer:    ⬜ (natural-language interface to sit on src/tools.py)
 Live data:              ⬜
 Website:                ⬜
 ```

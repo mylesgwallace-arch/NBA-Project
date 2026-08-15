@@ -12,6 +12,8 @@ from src.simulate_season import (
     _conference_rank_matrix,
     add_season_labels,
     actual_season_standings,
+    build_league_summary,
+    build_seedings_table,
     conference_of,
     load_pregame_probabilities,
     project_season,
@@ -245,6 +247,103 @@ def test_project_season_returns_standings_records():
     assert projection["season"] == 2025
     assert projection["n_simulations"] == 200
     assert len(projection["projected_standings"]) == 4
+
+
+def test_summarize_team_wins_adds_seed_probabilities_when_ranks_available():
+    probabilities = _synthetic_probabilities()
+    wins, teams = simulate_season(
+        probabilities, season=2025, n_simulations=500, random_state=3
+    )
+
+    summary = summarize_team_wins(wins, teams, probabilities, 2025)
+
+    seed_columns = [f"p_seed_{seed}" for seed in range(1, 7)]
+    assert {"mean_conference_seed", "median_conference_seed"} <= set(summary.columns)
+    assert set(seed_columns) <= set(summary.columns)
+    assert "out_of_playoffs_probability" in summary.columns
+    # With two East and two West teams, every team has a playoff seed
+    # (ranks 1..2), so out-of-playoffs probability must be zero.
+    assert (summary["out_of_playoffs_probability"] == 0.0).all()
+    # Seed probabilities per team must sum to 1 (seeds 1..6 + out).
+    for _, row in summary.iterrows():
+        seed_mass = sum(float(row[column]) for column in seed_columns)
+        seed_mass += float(row["out_of_playoffs_probability"])
+        np.testing.assert_allclose(seed_mass, 1.0)
+
+
+def test_summarize_team_wins_without_ranks_omits_seed_columns():
+    probabilities = _synthetic_probabilities()
+    wins, teams = simulate_season(
+        probabilities, season=2025, n_simulations=100, random_state=5
+    )
+
+    summary = summarize_team_wins(wins, teams)
+
+    assert "p_seed_1" not in summary.columns
+    assert "out_of_playoffs_probability" not in summary.columns
+    assert summary["direct_playoff_probability"].isna().all()
+
+
+def test_build_seedings_table_picks_most_likely_seed_occupants():
+    probabilities = _synthetic_probabilities()
+    wins, teams = simulate_season(
+        probabilities, season=2025, n_simulations=500, random_state=7
+    )
+    summary = summarize_team_wins(wins, teams, probabilities, 2025)
+
+    seedings = build_seedings_table(summary)
+
+    # Only two teams per conference exist in the synthetic schedule, so the
+    # table only covers seeds 1..2 (teams beyond the field are not assigned).
+    assert seedings
+    for slot in seedings:
+        assert slot["conference"] in ("East", "West")
+        assert 1 <= slot["seed"] <= 2
+        assert slot["teamId"] in {
+            1610612738,
+            1610612765,
+            1610612747,
+            1610612760,
+        }
+        assert 0.0 <= slot["probability"] <= 1.0
+    # Exactly two seed slots per conference.
+    east_slots = [slot for slot in seedings if slot["conference"] == "East"]
+    west_slots = [slot for slot in seedings if slot["conference"] == "West"]
+    assert len(east_slots) == 2
+    assert len(west_slots) == 2
+
+
+def test_build_league_summary_reports_aggregate_strength():
+    probabilities = _synthetic_probabilities()
+    wins, teams = simulate_season(
+        probabilities, season=2025, n_simulations=300, random_state=11
+    )
+    summary = summarize_team_wins(wins, teams, probabilities, 2025)
+
+    league = build_league_summary(summary)
+
+    assert league["n_teams"] == len(teams)
+    assert league["league_mean_wins"] == float(summary["mean_wins"].mean())
+    assert league["league_median_wins"] == float(summary["mean_wins"].median())
+    assert league["best_team"]["mean_wins"] == float(summary["mean_wins"].max())
+    assert league["worst_team"]["mean_wins"] == float(summary["mean_wins"].min())
+    assert set(league["conference_mean_wins"]) == {"East", "West"}
+    assert league["best_team"]["mean_wins"] >= league["worst_team"]["mean_wins"]
+
+
+def test_project_season_includes_seedings_and_league_summary():
+    probabilities = _synthetic_probabilities()
+
+    projection = project_season(
+        probabilities, season=2025, n_simulations=200, random_state=11
+    )
+
+    assert "projected_seedings" in projection
+    assert "league_summary" in projection
+    assert projection["league_summary"]["n_teams"] == 4
+    assert all(
+        "p_seed_1" in row for row in projection["projected_standings"]
+    )
 
 
 def test_validate_seasons_iterates_available_seasons():
