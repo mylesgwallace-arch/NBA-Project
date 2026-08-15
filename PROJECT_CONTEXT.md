@@ -66,6 +66,26 @@ only revisit player modeling if a more defensible dataset or a stronger,
 team-aware, roster-aware feature set can show an actual improvement on the same
 chronological split with no leakage.
 
+Current milestone (2026-08-14): freeze the production model and codify the
+negative player-context result in both the regression suite and the model-selection
+logic so future experiments must beat the validated baseline on the exact same
+chronological holdout before any model change is allowed. The repository remains in
+explanatory-analysis mode rather than production-model expansion mode, and the
+user-facing prediction and scenario summaries remain the supported interface. A new
+`candidate_beats_production` gate in `src/train_baseline_model.py` enforces that a
+replacement candidate must improve log loss while preserving or improving accuracy
+and not worsening Brier score; otherwise the production recommendation stays at
+`elo_boosted_ensemble`.
+
+Current milestone extension (2026-08-14): add a reusable candidate comparison API
+that can report the exact metric deltas against the frozen production model without
+searching for a new model. `summarize_candidate_comparison()` records the
+candidate-vs-production accuracy, log-loss, and Brier deltas and returns whether
+the candidate clears the production gate. This is the smallest meaningful
+next-step tool for future validation work: it keeps the production model frozen,
+provides a defensible comparison summary for any justified experiment, and keeps
+all evaluation tied to the same leakage-safe chronology.
+
 Validated current state (2026-08-13): the repository remains in a stable,
 production-ready analytical state. The full project test suite passes and the
 current default prediction path is the validated holdout winner for the present

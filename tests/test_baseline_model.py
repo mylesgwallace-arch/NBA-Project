@@ -1,3 +1,4 @@
+import json
 import math
 
 import numpy as np
@@ -10,6 +11,7 @@ from src.train_baseline_model import (
     add_player_context_features,
     average_probability_predictions,
     build_game_dataset,
+    candidate_beats_production,
     compare_calibration_methods,
     elo_win_probability,
     evaluate_boosted_hybrid_ablation,
@@ -22,6 +24,7 @@ from src.train_baseline_model import (
     evaluate_player_context_experiment,
     evaluate_player_efficiency_experiment,
     select_recommended_model,
+    summarize_candidate_comparison,
     summarize_feature_importance,
     tune_hybrid_logistic,
 )
@@ -409,6 +412,56 @@ def test_evaluate_player_context_experiment_reports_key_metrics():
     assert set(metrics) >= {"baseline", "with_player_context"}
     assert "player_minutes_rolling_10_per_active_player_rolling_10" in metrics["candidate_feature_names"]
     assert set(metrics["baseline"]) >= {"accuracy", "log_loss", "brier_score"}
+
+
+def test_player_context_experiment_does_not_beat_production_holdout():
+    features = pd.read_csv("data/processed/game_features.csv")
+    candidate = evaluate_player_context_experiment(features)
+    with open("models/baseline_metrics.json", "r", encoding="utf-8") as handle:
+        production = json.load(handle)["metrics"]["elo_boosted_ensemble"]
+
+    assert candidate["with_player_context"]["accuracy"] < production["accuracy"]
+    assert candidate["with_player_context"]["log_loss"] > production["log_loss"]
+    assert candidate["with_player_context"]["brier_score"] > production["brier_score"]
+
+
+def test_candidate_beats_production_requires_strict_improvement_on_core_metrics():
+    metrics = {
+        "elo_boosted_ensemble": {"accuracy": 0.65, "log_loss": 0.63, "brier_score": 0.22},
+        "player_history_logistic": {"accuracy": 0.65, "log_loss": 0.62, "brier_score": 0.21},
+    }
+    assert candidate_beats_production(metrics, "player_history_logistic")
+
+    metrics["player_history_logistic"] = {
+        "accuracy": 0.64,
+        "log_loss": 0.62,
+        "brier_score": 0.22,
+    }
+    assert not candidate_beats_production(metrics, "player_history_logistic")
+
+
+def test_select_recommended_model_keeps_current_production_when_candidate_loses():
+    metrics = {
+        "home_win_rate": {"accuracy": 0.56, "log_loss": 0.69, "brier_score": 0.25},
+        "elo_boosted_ensemble": {"accuracy": 0.65, "log_loss": 0.62, "brier_score": 0.22},
+        "player_history_logistic": {"accuracy": 0.64, "log_loss": 0.63, "brier_score": 0.23},
+    }
+
+    assert select_recommended_model(metrics) == "elo_boosted_ensemble"
+
+
+def test_summarize_candidate_comparison_reports_metric_deltas():
+    metrics = {
+        "elo_boosted_ensemble": {"accuracy": 0.65, "log_loss": 0.62, "brier_score": 0.22},
+        "player_history_logistic": {"accuracy": 0.66, "log_loss": 0.61, "brier_score": 0.21},
+    }
+
+    summary = summarize_candidate_comparison(metrics, "player_history_logistic")
+
+    assert summary["candidate_beats_production"] is True
+    assert summary["accuracy_delta"] > 0
+    assert summary["log_loss_delta"] < 0
+    assert summary["brier_score_delta"] < 0
 
 
 def test_add_elo_rating_deltas_tracks_pregame_strength_gap():

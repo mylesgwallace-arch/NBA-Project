@@ -883,7 +883,76 @@ def tune_hybrid_logistic(train, test, columns, c_values=None):
     return best_model, best_c, best_metrics
 
 
-def select_recommended_model(metrics, candidates=None, ranking_metric="log_loss"):
+def candidate_beats_production(
+    metrics,
+    candidate,
+    production_model="elo_boosted_ensemble",
+    ranking_metric="log_loss",
+    min_log_loss_improvement=1e-6,
+):
+    """Return True only when a candidate improves the validated production model.
+
+    The project keeps the existing production engine as the default unless a new
+    candidate beats the same holdout on the same pregame chronology and does not
+    deteriorate the other core probability metrics.
+    """
+    if candidate == production_model or candidate not in metrics:
+        return False
+    if production_model not in metrics:
+        return False
+    candidate_metrics = metrics[candidate]
+    production_metrics = metrics[production_model]
+    if ranking_metric not in candidate_metrics or ranking_metric not in production_metrics:
+        return False
+    if candidate_metrics[ranking_metric] >= (
+        production_metrics[ranking_metric] - min_log_loss_improvement
+    ):
+        return False
+    if candidate_metrics.get("accuracy", -np.inf) < production_metrics.get("accuracy", np.inf):
+        return False
+    if candidate_metrics.get("brier_score", np.inf) > production_metrics.get("brier_score", -np.inf):
+        return False
+    return True
+
+
+def summarize_candidate_comparison(
+    metrics,
+    candidate,
+    production_model="elo_boosted_ensemble",
+    ranking_metric="log_loss",
+):
+    """Return a one-line comparison summary for a candidate against the current production model."""
+    if candidate not in metrics or production_model not in metrics:
+        raise KeyError(f"Missing candidate or production metrics: {candidate!r}, {production_model!r}")
+    candidate_metrics = metrics[candidate]
+    production_metrics = metrics[production_model]
+    delta_accuracy = candidate_metrics.get("accuracy", np.nan) - production_metrics.get("accuracy", np.nan)
+    delta_log_loss = candidate_metrics.get("log_loss", np.nan) - production_metrics.get("log_loss", np.nan)
+    delta_brier = candidate_metrics.get("brier_score", np.nan) - production_metrics.get("brier_score", np.nan)
+    return {
+        "candidate": candidate,
+        "production_model": production_model,
+        "candidate_beats_production": candidate_beats_production(
+            metrics,
+            candidate,
+            production_model=production_model,
+            ranking_metric=ranking_metric,
+        ),
+        "ranking_metric": ranking_metric,
+        "accuracy_delta": float(delta_accuracy),
+        "log_loss_delta": float(delta_log_loss),
+        "brier_score_delta": float(delta_brier),
+        "candidate_metrics": candidate_metrics,
+        "production_metrics": production_metrics,
+    }
+
+
+def select_recommended_model(
+    metrics,
+    candidates=None,
+    ranking_metric="log_loss",
+    production_model="elo_boosted_ensemble",
+):
     """Pick the best-performing candidate model on the chronological holdout.
 
     Log loss is used as the default ranking metric because it rewards
@@ -891,11 +960,25 @@ def select_recommended_model(metrics, candidates=None, ranking_metric="log_loss"
     which matches the project's probabilistic-prediction evaluation guidance.
     ``home_win_rate`` is excluded by default because it is a trivial baseline
     used only as a reference point, not a deployable prediction.
+
+    A candidate only replaces the validated production model when it improves the
+    same holdout on the ranking metric while preserving or increasing accuracy and
+    not worsening the Brier score.
     """
     if candidates is None:
         candidates = [name for name in metrics if name != "home_win_rate"]
     if not candidates:
         raise ValueError("No candidate models available to select from.")
+    if production_model in candidates:
+        best_candidate = min(candidates, key=lambda name: metrics[name][ranking_metric])
+        if best_candidate != production_model and candidate_beats_production(
+            metrics,
+            best_candidate,
+            production_model=production_model,
+            ranking_metric=ranking_metric,
+        ):
+            return best_candidate
+        return production_model
     return min(candidates, key=lambda name: metrics[name][ranking_metric])
 
 
