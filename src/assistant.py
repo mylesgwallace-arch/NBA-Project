@@ -137,18 +137,29 @@ def extract_team_ids(question, db_path=TEAM_DB_PATH):
     mentions = load_team_mentions(db_path)
     # Sort by phrase length so "Los Angeles Lakers" beats "Los Angeles".
     found = []
-    remaining = normalized
+    used_spans = []
     for phrase in sorted(mentions, key=len, reverse=True):
         if not phrase or len(mentions[phrase]) != 1:
             continue
-        # Match whole phrases within the question, avoiding partial hits.
+        # Match whole phrases within the question, avoiding partial hits and
+        # overlapping previously consumed spans.
         pattern = r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])"
-        if re.search(pattern, remaining):
-            team_id = mentions[phrase][0]
-            if team_id not in found:
-                found.append(team_id)
-            remaining = remaining.replace(phrase, " ")
-    return found
+        for match in re.finditer(pattern, normalized):
+            span = match.span()
+            if any(not (span[1] <= start or span[0] >= end)
+                   for start, end in used_spans):
+                continue
+            found.append((span[0], mentions[phrase][0]))
+            used_spans.append(span)
+            break
+    # Dedupe teams while preserving order of first mention in the question.
+    result = []
+    seen = set()
+    for _position, team_id in sorted(found, key=lambda item: item[0]):
+        if team_id not in seen:
+            seen.add(team_id)
+            result.append(team_id)
+    return result
 
 
 def extract_season(question):
@@ -275,14 +286,18 @@ def resolve_intent(question):
                                    "person_id": person_id}
 
     # Single-game matchup prediction (favored / vs / win chance).
-    if re.search(r"favored|favorite|vs|versus|win chance|win probability|who wins|beat", normalized):
+    if re.search(
+        r"favored|favorite|vs|versus|win chance|win probability|who wins|will win|beat",
+        normalized,
+    ):
         home, away = _two_teams(team_ids, question)
         return "predict_matchup", {"home_team_id": home, "away_team_id": away}
 
     # Team name resolution.
     if re.search(r"team id|teamid|resolve", normalized) and team_ids:
         team_id = _one_team(team_ids, question)
-        return "resolve_team_name", {"team": question}
+        label = load_team_labels().get(team_id, str(team_id))
+        return "resolve_team_name", {"team": label}
 
     raise ValueError(
         "I could not map that question to a supported analytical tool. "
@@ -383,9 +398,10 @@ def render_envelope(envelope, labels=None):
         games = diagnostic.get("prior_games")
         line = (
             f"Player-impact diagnostic (personId {person_id}, {confidence} "
-            f"confidence, {games} prior games): the estimate for a {direction} "
-            f"is a {change:+.2f} net-rating change from a {net:+.2f} player "
-            f"net rating."
+            f"confidence, {games} prior games): the estimate for "
+            f"{'an' if direction and direction[0].lower() in 'aeiou' else 'a'} "
+            f"{direction} is a {change:+.2f} net-rating change from a {net:+.2f} "
+            f"player net rating."
         )
         return line + " This is an association-only estimate, not a causal forecast."
 

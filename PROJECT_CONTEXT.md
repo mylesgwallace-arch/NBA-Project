@@ -12,9 +12,20 @@
 
 The current objective is to build and validate the **historical NBA analytics foundation**.
 
-Implementation update (2026-08-15): built the deterministic analytical tool
-layer and orchestration architecture (roadmap item 10) underneath the future
-natural-language AI interface. The new `src/tools.py` exposes the project's
+Implementation update (2026-08-15): built the deterministic natural-language
+interface (roadmap item 11) on top of the analytical tool layer. The new
+`src/assistant.py` maps a plain-language question to a deterministic tool call,
+dispatches it through `src.tools.execute_tool`, and renders the returned
+structured envelope as a plain-language answer while surfacing the tool's
+assumptions/limitations. Every value in a reply comes from the deterministic
+tool envelope -- the assistant never fabricates an answer from its own
+knowledge. Question parsing is pattern-based and fully deterministic, so the
+interface works without any language model and is testable; a future LLM can
+call the same `execute_tool` interface directly and reuse the same envelopes.
+
+Prior implementation update (2026-08-15): built the deterministic analytical tool
+layer and orchestration architecture (roadmap item 10) underneath the natural-
+language interface. The new `src/tools.py` exposes the project's
 validated capabilities as named, parameterized, deterministic tools with a
 single routing entry point (`execute_tool`) that returns structured result
 envelopes carrying the operation performed, the model/data that produced it,
@@ -47,33 +58,52 @@ appearances exist. (4) The pregame-probability cache is reused across
 simulation tool calls in one process to avoid re-running the chronological Elo
 replay repeatedly. (5) The layer is modular: no LLM-specific logic is added to
 `src/main.py`, `src/simulate_season.py`, or `src/player_impact.py`.
+(6) The natural-language layer (`src/assistant.py`) is also deterministic:
+question routing uses pattern matching plus read-only team/player lookups from
+`nba.db`, never a language model, so it is testable and cannot invent numbers.
+Ambiguous mentions (e.g. the shared city "Los Angeles") are skipped so a more
+specific phrase wins, and ambiguous/incomplete/unsupported questions return a
+clear structured error instead of a guess. Player-impact rendering passes the
+diagnostic's confidence and its association-only warning through verbatim.
 
-Validation: 17 new focused tests in `tests/test_tools.py` cover routing, schema
-validation, structured envelopes, model preservation, unavailable/low-
-confidence player diagnostics, and the factual database tools (using a
-temporary SQLite database). The full fast suite is 88 tests passing. Real-data
-CLI checks: `predict_matchup` returns the frozen `elo_boosted_ensemble`
+Validation: the tool layer has 17 focused tests in `tests/test_tools.py`
+(routing, schema validation, structured envelopes, model preservation,
+unavailable/low-confidence player diagnostics, factual database tools). The
+natural-language layer adds 23 tests in `tests/test_assistant.py` (team/player
+extraction, intent routing, ambiguity and unsupported-question handling, and
+envelope-derived rendering that is verified to never fabricate values). The
+full fast suite is now 111 tests passing in ~17s. Real-data CLI checks:
+`predict_matchup` returns the frozen `elo_boosted_ensemble`
 probability (e.g. Celtics 69.3% over Lakers); `team_record` returns OKC's
 actual 2025 record (64-18); `head_to_head` returns the 2025 Celtics-Lakers
 series (2-0 Celtics); `team_projection` returns OKC 63.8 mean wins with 97.5%
 West seed-1 probability; `player_impact` returns the association-only Steven
 Adams diagnostic at moderate confidence; unknown tools, missing parameters, and
 players without history all return structured error/unavailable envelopes.
+Real-data assistant questions: "Who is favored in Celtics vs Lakers?" answers
+with the frozen model probabilities; "What is the head to head record between
+Boston and LA Lakers?" answers 2-0 Celtics; "What was OKC's record in the 2025
+season?" answers 64-18; "What is Boston's probability of getting the 1 seed?"
+answers 57.1 mean wins / 65.7% seed-1; "What are the projected playoff teams?"
+lists the full 12-team projected direct-playoff field from the Monte Carlo
+engine; the player-impact question about Steven Adams returns the
+association-only diagnostic with its non-causal warning.
 
-Current state: roadmap item 10 is meaningfully complete. The deterministic tool
-layer is the stable programmatic surface the natural-language layer will sit
-on, and every exposed capability routes to already-validated code. The frozen
-`elo_boosted_ensemble` production model, the prediction CLI/interactive
+Current state: roadmap items 10 and 11 are meaningfully complete. The
+deterministic tool layer is the stable programmatic surface, and the
+natural-language interface sits on top of it, dispatching every question
+through `execute_tool` and rendering only the values those tools return. The
+frozen `elo_boosted_ensemble` production model, the prediction CLI/interactive
 interface, the season simulator, and the association-only player-impact
 diagnostics are unchanged.
 
-Exact next step: the next milestone (item 11, the natural-language AI layer) is
-to build the thin conversational/orchestration interface on top of
-`src/tools.py` -- map a user question to a tool call, dispatch through
-`execute_tool`, and render the structured envelope as a plain-language answer
-while surfacing assumptions/limitations. That layer must keep all values
-coming from the deterministic tools rather than the language model's own
-knowledge.
+Exact next step: the next milestone (item 12) is to add a live-data ingestion
+path -- a scheduled, source-provenanced refresh of the repository's box-score
+and schedule data (or a documented external feed) that keeps the validated
+feature pipeline, prediction model, simulator, and tool layer operating on
+current data. The natural-language interface is already positioned to expose
+any new live-data capability through the same `execute_tool` envelope
+contract.
 
 The immediate objective was to restore the raw CSV to SQLite feature-engineering
 pipeline after `src/build_features.py` loaded 0 team-game rows, establish a
@@ -1473,9 +1503,9 @@ Priority order:
 8. Develop player-impact modeling ✅ (association diagnostics only, gated)
 9. Develop simulations ✅ (Monte Carlo season engine + projected seedings/playoff field/league summary)
 10. Build AI/tool layer ✅ (deterministic tool registry + orchestration routing in src/tools.py)
-11. Add live data ⬜
-11. Add live data ⬜
-12. Build website ⬜
+11. Build natural-language AI layer ✅ (deterministic question->tool mapping + plain-language rendering in src/assistant.py)
+12. Add live data ⬜
+13. Build website ⬜
 ```
 
 This priority is a current development state, not a permanent project roadmap.
@@ -1657,7 +1687,7 @@ Model evaluation:         ✅ Chronological holdout with accuracy, log loss, and
 Player impact model:    ⚠️ Historical team-game cutoffs improve slightly, but roster-change validation does not; external prospective data ingestion is now ready, causal/prospective validation still required
 Simulation engine:      ✅ Monte Carlo season simulator validated (2023-2025 replay MAE 3.7-4.6 wins, playoff field overlap 8-11/12) with projected seedings, playoff field, and league summary wired into both CLIs
 Tool/orchestration:     ✅ deterministic tool registry (predict_matchup, simulate_season, team_projection, player_impact, player_scenario, team_record, head_to_head, resolve_team_name) with structured envelopes in src/tools.py
-AI agent/tool layer:    ⬜ (natural-language interface to sit on src/tools.py)
+AI agent/tool layer:    ✅ deterministic natural-language interface (src/assistant.py) mapping questions to tool calls and rendering envelopes as plain-language answers
 Live data:              ⬜
 Website:                ⬜
 ```
